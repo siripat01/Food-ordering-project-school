@@ -1,0 +1,45 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# ---- Virtual environment ----
+.venv/
+venv/
+ENV/
+env/
+
+# ---- Jupyter Notebook ----
+.ipynb_checkpoints/
+
+# ---- Logs ----
+*.log
+logs/
+*.out
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+
+# ---- Environment variables ----
+.env
+.env.*
+
+# ---- ML Models / Data ----
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.model
+*.ckpt
+
+# ---- Cache ----
+.cache/
+.mypy_cache/
+.pytest_cache/
