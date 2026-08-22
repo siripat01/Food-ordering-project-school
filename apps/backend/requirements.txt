@@ -1,0 +1,11 @@
+fastapi==0.116.1
+httpx==0.28.1
+langchain-core==0.3.74
+line-bot-sdk==3.18.1
+litellm==1.97.0
+pydantic-settings==2.15.0
+prometheus-client==0.26.0
+PyJWT==2.10.1
+pymongo==4.14.1
+python-multipart==0.0.20
+uvicorn[standard]==0.35.0

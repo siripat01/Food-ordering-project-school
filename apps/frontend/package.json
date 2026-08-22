@@ -1,0 +1,32 @@
+{
+  "name": "food-ordering",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@material-ui/core": "^4.12.4",
+    "@mui/joy": "5.0.0-beta.52",
+    "@mui/lab": "7.0.0-beta.17",
+    "@mui/material": "^7.3.2",
+    "axios": "^1.11.0",
+    "motion": "^12.23.12",
+    "next": "15.5.2",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
