@@ -76,10 +76,7 @@ Implemented:
 - Metrics for request latency, order volume, LLM latency/errors, and token/cost usage.
 - Automated valid/missing configuration container startup tests and broader API integration coverage.
 
-Remaining external verification:
-
-- Run the GitHub Actions workflow for the first time.
-- Run LINE OAuth and webhook end-to-end tests with dedicated sandbox credentials.
+Remote verification: GitHub Actions run `32586236010` passed backend, frontend, and container jobs for Phase 3 commit `e5bd195` on 2026-08-23. LINE OAuth and webhook end-to-end behavior still requires dedicated sandbox credentials.
 
 ### Phase 3: Portfolio features — implemented and locally verified
 
@@ -90,7 +87,7 @@ Remaining external verification:
 - The CPU-only builder creates immutable time-decayed trending and bounded item-item artifacts, evaluates recent/trending/item-item on one temporal split, reports Recall/NDCG/coverage/popularity-share/cohorts, and enforces quality/size gates.
 - Serving supports explicit local/external-first/external-fallback modes, deterministic 0–100% item-item rollout, bounded last-known-good caches, recent-catalog fallback, atomic activation, validated rollback, and active/previous model retention.
 
-Remaining external/operational work: observe the GitHub Actions run, rotate the historically exposed MongoDB credential outside the repository, validate LINE flows with dedicated sandbox credentials, build a model from representative deployment data, and increase personalized rollout only after reviewing offline and live metrics.
+Remaining external/operational work: rotate the historically exposed MongoDB credential outside the repository, validate LINE flows with dedicated sandbox credentials, build a model from representative deployment data, and increase personalized rollout only after reviewing offline and live metrics.
 
 ## LLM provider note
 
@@ -134,6 +131,6 @@ Runtime endpoints:
 
 1. Read this file, `README.md`, and `docs/security-incident-response.md`.
 2. Inspect the complete working tree and current diff before making changes.
-3. Inspect the first GitHub Actions result and fix any portability issue before treating the remote check as verified.
+3. Keep the backend, frontend, and container GitHub Actions jobs green on every change.
 4. Validate LINE OAuth, webhook, and status notifications with dedicated sandbox credentials.
 5. Run a recommendation shadow build on representative data, review the gate output, then use 5%, 25%, and 100% rollout checkpoints with rollback readiness.

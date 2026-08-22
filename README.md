@@ -270,7 +270,7 @@ The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC
 
 ## Known limitations
 
-- The GitHub Actions workflow must run in GitHub before its first result can be reported.
+- GitHub Actions passed backend, frontend, and container jobs for Phase 3 commit `e5bd195` on 2026-08-23; future changes must keep the same gates green.
 - OAuth/webhook behavior requires real LINE sandbox credentials for end-to-end verification.
 - In-memory agent context is per process and is intentionally lost on restart.
 - LiteLLM response caching is local to one process and intentionally disabled for customer-agent calls.
@@ -281,6 +281,6 @@ The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC
 
 ## Roadmap
 
-1. Run the locally verified workflow in GitHub, then add deployment screenshots and a demo recording.
+1. Keep GitHub Actions green, then add deployment screenshots and a demo recording.
 2. Validate LINE OAuth, webhook, and order-status pushes with dedicated sandbox credentials.
 3. Run controlled recommendation rollout at 5%, 25%, and 100% only after production-like latency and conversion monitoring.

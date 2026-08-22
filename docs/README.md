@@ -24,6 +24,6 @@ This directory contains the operational and engineering documentation for the Fo
 
 ## Implementation status
 
-Phases 0 through 3 are implemented in the working tree, including the SSE staff queue, LINE status notifications, slate-validated recommendation analytics, and bounded CPU-only trending/item-item artifacts with controlled rollout and rollback. Backend lint/type/tests, frontend type-check/build, and an isolated Docker Compose smoke test are the local release gates. The first GitHub Actions run and real LINE sandbox end-to-end verification remain external actions.
+Phases 0 through 3 are implemented, including the SSE staff queue, LINE status notifications, slate-validated recommendation analytics, and bounded CPU-only trending/item-item artifacts with controlled rollout and rollback. Backend lint/type/tests, frontend type-check/build, and container smoke tests passed locally and in GitHub Actions for Phase 3 commit `e5bd195`. Real LINE sandbox end-to-end verification remains an external action.
 
 Documentation must describe only behavior present in the repository. Update the relevant guide in the same change whenever an endpoint, role permission, environment variable, operational procedure, or user flow changes.

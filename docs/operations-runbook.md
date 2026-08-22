@@ -171,7 +171,7 @@ Keep `RECOMMENDATION_ITEM_ITEM_ROLLOUT_PERCENT=0` while shadow-building. Increas
 ## Current operational limitations
 
 - The post-LiteLLM backend and frontend images passed an isolated local Docker Compose rebuild and smoke test on 2026-08-22.
-- The first GitHub Actions result has not been observed yet.
+- GitHub Actions backend, frontend, and container jobs passed for Phase 3 commit `e5bd195` on 2026-08-23.
 - LINE OAuth and webhook behavior still require a real sandbox end-to-end test.
 - Metrics are process-local, and agent memory/cache is not shared across replicas.
 - SSE fan-out and recommendation caches are process-local. Recommendation replicas converge through the shared active-model pointer in MongoDB.
