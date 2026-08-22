@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { use, useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import Loading from "@/app/components/Loading";
 import Navbar from "@/app/components/Navbar";
 import ProductImage from "@/app/components/ProductImage";
 import api from "@/app/libs/axios";
 import { login } from "@/app/libs/login";
+import { recordRecommendationOrderIntent } from "@/app/libs/recommendations";
 import { useUserStore } from "@/app/store/user";
 
 type Addon = { id: string; name: string; price: number; available: boolean };
@@ -29,6 +30,7 @@ export default function OrderProductPage({
 }) {
   const { productId } = use(params);
   const router = useRouter();
+  const searchParams = useSearchParams();
   const userId = useUserStore((state) => state.id);
   const [product, setProduct] = useState<Product | null>(null);
   const [note, setNote] = useState("");
@@ -68,6 +70,13 @@ export default function OrderProductPage({
         { items: [{ product_id: product.id, quantity, addon_ids: addonIds, note }] },
         { headers: { "Idempotency-Key": idempotencyKey.current } },
       );
+      const recommendationId = searchParams.get("recommendation");
+      if (recommendationId) {
+        void recordRecommendationOrderIntent({
+          productId: product.id,
+          recommendationId,
+        });
+      }
       router.push("/order");
     } catch {
       setSubmitError(true);

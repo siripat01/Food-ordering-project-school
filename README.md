@@ -2,7 +2,7 @@
 
 A portfolio-grade modular monolith for ordering food through a Next.js web application or a LINE chat assistant. The backend treats authentication, authorization, prices, order transitions, and idempotency as deterministic application concerns rather than LLM decisions.
 
-> Security incident notice: a MongoDB URI was committed in the legacy backend and remains in Git history. Treat that credential as compromised, rotate it outside this repository, and follow [the incident runbook](docs/security-incident-response.md). The application no longer contains or accepts an insecure fallback URI.
+> Security incident notice: a MongoDB URI was committed in the legacy backend. The current `main` branch was rewritten to a sanitized single root commit on 2026-08-22, but hosting caches, forks, and old clones may retain the former object. Treat the credential as compromised, rotate it outside this repository, and follow [the incident runbook](docs/security-incident-response.md).
 
 ## Problem statement
 
@@ -14,6 +14,8 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 - Three application roles: `customer`, `staff`, and `admin`
 - Customer-owned order creation, reading, and eligible cancellation
 - Staff order queue and validated operational status transitions
+- Authenticated SSE updates for the live staff queue with bounded per-client buffers
+- LINE push notifications for confirmed, preparing, ready, completed, and cancelled orders
 - Admin product and user-role management
 - Multi-item order schema with product/add-on snapshots and server-calculated totals
 - Atomic status changes, status history, order idempotency, and LINE webhook deduplication
@@ -22,6 +24,7 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 - Feature flags for LINE, LLM, and the external recommender
 - In-process LiteLLM complexity/cost routing, independent fallbacks, and safe opt-in caching
 - Structured redacted JSON logs and Prometheus request, order, and LLM metrics
+- Slate-validated recommendation events, CPU-only trending/item-item artifacts, controlled rollout/rollback, and temporal Recall@K/NDCG@K evaluation
 - Explicit CORS allowlist, request IDs, liveness, readiness, and non-root containers
 - Dual-read compatibility and an idempotent legacy-order migration command
 - GitHub Actions for lint, type-check, unit/integration tests, frontend build, and container smoke tests
@@ -38,7 +41,7 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 │   │   ├── app/domain/       # Validated domain models and rules
 │   │   ├── app/integrations/ # LINE and role-scoped AI agent
 │   │   ├── app/services/     # Application services
-│   │   ├── scripts/          # Explicit database migration
+│   │   ├── scripts/          # Explicit migration and CPU recommendation jobs
 │   │   └── tests/
 │   └── frontend/             # Next.js customer/staff web application
 ├── docker-compose.yaml
@@ -62,6 +65,10 @@ flowchart LR
     Auth --> Mongo[(MongoDB)]
     Products --> Mongo
     Orders --> Mongo
+    Orders -->|Committed status event| SSE[Staff SSE stream]
+    Orders -->|Status notification| LINE
+    API --> Recommendations[Recommendation service]
+    Recommendations --> Mongo
     API -. feature-flagged .-> Recommender[External recommender]
 ```
 
@@ -110,7 +117,7 @@ Requirements: Docker with Compose v2.
 
 ```bash
 cp .env.example .env
-# Replace placeholders and generate a JWT secret with at least 32 random characters.
+# Replace placeholders and generate independent JWT and recommendation secrets.
 docker compose up --build
 ```
 
@@ -135,6 +142,7 @@ docker compose up --build
 | `COOKIE_SECURE` | Yes in production | Must be `true` in production |
 | `LOG_LEVEL`, `LOG_JSON` | No | Structured application log configuration |
 | `METRICS_ENABLED` | No | Exposes Prometheus metrics at `/metrics` |
+| `SSE_HEARTBEAT_SECONDS`, `SSE_SUBSCRIBER_QUEUE_SIZE` | No | Staff-stream heartbeat and bounded subscriber buffer |
 | `LINE_ENABLED` | No | Enables LINE OAuth and webhook handling |
 | `LINE_CHANNEL_SECRET` | When LINE is enabled | Webhook signature secret |
 | `LINE_CHANNEL_ACCESS_TOKEN` | When LINE is enabled | Messaging API credential |
@@ -152,7 +160,12 @@ docker compose up --build
 | `LLM_MEMORY_MESSAGES`, `LLM_MEMORY_TTL_MINUTES` | No | Per-user memory bounds and expiry |
 | `LLM_CACHE_*` | No | Bounded local cache; customer-agent calls always use `no-store` |
 | `LLM_*_COST_PER_MILLION` | No | Explicit inputs for estimated cost metrics |
-| `RECOMMENDER_ENABLED`, `RECOMMENDER_URL` | No | Reserved feature-flagged integration settings |
+| `RECOMMENDER_ENABLED`, `RECOMMENDER_URL`, `RECOMMENDER_TIMEOUT_SECONDS`, `RECOMMENDER_MODE` | No | Optional external provider and explicit `local`, `external_first`, or `external_fallback` policy |
+| `RECOMMENDATION_USER_REF_SECRET`, `RECOMMENDATION_USER_REF_KEY_VERSION`, `RECOMMENDATION_USER_REF_PREVIOUS_SECRETS` | Yes / No | Dedicated pseudonym key, rotation label, and temporary version-to-old-key map for complete privacy purge; never reuse `JWT_SECRET` |
+| `RECOMMENDATION_EVENT_RETENTION_DAYS`, `RECOMMENDATION_SLATE_RETENTION_DAYS` | No | MongoDB TTL retention for pseudonymous events and served slates |
+| `RECOMMENDATION_DAILY_*_CAP` | No | Per-user/product/day engagement abuse bounds |
+| `RECOMMENDATION_ITEM_ITEM_ROLLOUT_PERCENT` | No | Deterministic personalized-model rollout percentage; defaults to `0` |
+| `RECOMMENDATION_MODEL_*`, `RECOMMENDATION_RESULT_CACHE_*`, `RECOMMENDATION_PROFILE_*` | No | Artifact polling, memory/size, result-cache, and profile bounds |
 | `NEXT_PUBLIC_API_URL` | Yes for frontend build | Browser-visible API base URL |
 
 See [.env.example](.env.example) for safe placeholders.
@@ -168,6 +181,7 @@ See [the LLM gateway design](docs/llm-gateway.md) and [the observability runbook
 - [Operations runbook](docs/operations-runbook.md)
 - [LLM gateway](docs/llm-gateway.md)
 - [Observability runbook](docs/observability.md)
+- [CPU recommendation-system plan](docs/recommendation-system-plan.md)
 - [Credential incident runbook](docs/security-incident-response.md)
 
 ## Database compatibility and migration
@@ -189,13 +203,13 @@ python -m scripts.migrate_orders_v2 --apply
 
 The migration is idempotent and does not delete legacy fields. Rollout order: deploy dual-read/new-write code, back up the database, dry-run, apply in batches, compare document counts/totals, and retain the legacy reader until verification is complete.
 
-Indexes are created at backend startup for user/time, status/time, active order lookup, order idempotency, webhook events, LINE identities, and OAuth state TTL.
+Indexes are created at backend startup for user/time, status/time, active order lookup, order idempotency, webhook events, LINE identities, OAuth state TTL, recommendation slates/events/counters, completed-order training scans, and versioned model artifacts.
 
 ## Testing and quality checks
 
 ```bash
 cd apps/backend
-python -m venv .venv
+python3.12 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
@@ -211,9 +225,21 @@ pnpm build
 
 cd ../..
 docker compose build
+
+# Build/evaluate a bounded CPU-only model without writing to MongoDB.
+cd apps/backend
+.venv/bin/python -m scripts.build_recommendation_model
+.venv/bin/python -m scripts.evaluate_recommendations --days 180 --test-days 14
+
+# After reviewing the offline metrics, write and request activation.
+.venv/bin/python -m scripts.build_recommendation_model --write --activate
+
+# Roll back by atomically switching to a retained ready version.
+.venv/bin/python -m scripts.build_recommendation_model \
+  --write --rollback-version MODEL_VERSION
 ```
 
-The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC, cross-user order access, trusted price calculation, idempotent creation, invalid terminal transitions, OAuth state consumption, duplicate webhook delivery, customer-agent tool isolation, log redaction, metrics, LiteLLM routing/cache policy, and a real MongoDB API flow. GitHub Actions supplies an isolated MongoDB service and also verifies missing/valid container startup behavior.
+The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC, cross-user order access, trusted price calculation, idempotent creation, invalid terminal transitions, OAuth state consumption, duplicate webhook delivery, customer-agent tool isolation, SSE fan-out, LINE status-notification boundaries, recommendation idempotency/privacy, offline metrics, log redaction, LiteLLM routing/cache policy, and a real MongoDB API flow. GitHub Actions supplies an isolated MongoDB service and also verifies missing/valid container startup behavior.
 
 ## Deployment
 
@@ -240,19 +266,21 @@ The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC
 - AI memory is bounded in-process and expires. This avoids storing chat PII but is not shared across replicas.
 - HttpOnly cookies are used for the browser, while Bearer tokens remain supported for non-browser API clients.
 - Physical deletion is avoided for products and users; operational state is preserved for auditability.
+- Recommendation events store a keyed pseudonymous user reference rather than the MongoDB user ID. Offline time-decayed trending and item-item co-occurrence run on bounded CPU workloads and produce immutable MongoDB artifacts; no GPU, vector database, or separate service is required.
 
 ## Known limitations
 
 - The GitHub Actions workflow must run in GitHub before its first result can be reported.
-- LINE status notifications, SSE staff queue updates, and recommendation event tracking are not implemented.
-- The recommender configuration is feature-flagged, but the external recommender is not called by the Phase 1 agent.
 - OAuth/webhook behavior requires real LINE sandbox credentials for end-to-end verification.
 - In-memory agent context is per process and is intentionally lost on restart.
 - LiteLLM response caching is local to one process and intentionally disabled for customer-agent calls.
+- SSE fan-out is process-local; a multi-replica deployment requires a shared event transport or single-replica queue affinity.
+- Personalized item-item serving defaults to a `0%` rollout until an operator reviews temporal Recall/NDCG, coverage, artifact bounds, and activation-gate output.
+- Recommendation artifact/result caches are process-local; each backend replica polls the same active MongoDB pointer and retains deterministic recent-catalog fallback behavior.
 - The copied frontend history is not yet merged into the backend repository's commit graph; the original frontend repository is retained outside this monorepo working tree until a history-preserving merge is explicitly authorized.
 
 ## Roadmap
 
-1. Run the locally verified Phase 2 workflow in GitHub, then add deployment screenshots and a demo recording.
-2. Add SSE for the staff queue and LINE notifications for every operational status.
-3. Record recommendation events and implement a popularity baseline with Recall@K and NDCG@K evaluation.
+1. Run the locally verified workflow in GitHub, then add deployment screenshots and a demo recording.
+2. Validate LINE OAuth, webhook, and order-status pushes with dedicated sandbox credentials.
+3. Run controlled recommendation rollout at 5%, 25%, and 100% only after production-like latency and conversion monitoring.

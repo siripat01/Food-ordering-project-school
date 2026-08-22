@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
@@ -126,6 +126,41 @@ class ApplicationMetrics:
             ("status",),
             registry=self.registry,
         )
+        self.recommendations_served = Counter(
+            "food_ordering_recommendations_served_total",
+            "Recommendation responses by selected strategy.",
+            ("strategy",),
+            registry=self.registry,
+        )
+        self.recommendation_events = Counter(
+            "food_ordering_recommendation_events_total",
+            "Accepted recommendation events by event type.",
+            ("event_type",),
+            registry=self.registry,
+        )
+        self.recommendation_latency = Histogram(
+            "food_ordering_recommendation_duration_seconds",
+            "Recommendation serving latency by bounded strategy.",
+            ("strategy",),
+            registry=self.registry,
+        )
+        self.recommendation_fallbacks = Counter(
+            "food_ordering_recommendation_fallbacks_total",
+            "Recommendation fallbacks by bounded reason.",
+            ("reason",),
+            registry=self.registry,
+        )
+        self.recommendation_cache = Counter(
+            "food_ordering_recommendation_cache_total",
+            "Recommendation artifact and result cache outcomes.",
+            ("cache", "outcome"),
+            registry=self.registry,
+        )
+        self.recommendation_model_age = Gauge(
+            "food_ordering_recommendation_active_model_age_seconds",
+            "Age of the active local recommendation model.",
+            registry=self.registry,
+        )
         self.llm_latency = Histogram(
             "food_ordering_llm_request_duration_seconds",
             "Customer-agent LLM latency in seconds.",
@@ -163,6 +198,24 @@ class ApplicationMetrics:
 
     def record_order_status(self, status: str) -> None:
         self.order_status_changes.labels(status).inc()
+
+    def record_recommendations_served(self, strategy: str) -> None:
+        self.recommendations_served.labels(strategy).inc()
+
+    def record_recommendation_event(self, event_type: str) -> None:
+        self.recommendation_events.labels(event_type).inc()
+
+    def observe_recommendation(self, *, strategy: str, duration_seconds: float) -> None:
+        self.recommendation_latency.labels(strategy).observe(duration_seconds)
+
+    def record_recommendation_fallback(self, reason: str) -> None:
+        self.recommendation_fallbacks.labels(reason).inc()
+
+    def record_recommendation_cache(self, *, cache: str, outcome: str) -> None:
+        self.recommendation_cache.labels(cache, outcome).inc()
+
+    def set_recommendation_model_age(self, age_seconds: float) -> None:
+        self.recommendation_model_age.set(max(age_seconds, 0))
 
     def observe_llm(
         self,

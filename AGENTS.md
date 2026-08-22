@@ -20,7 +20,7 @@ Communicate progress and explanations to the user in Thai. Keep code, identifier
 - `docs/security-incident-response.md`: Credential rotation and optional history-cleanup runbook.
 - `README.md`: Implemented architecture, role model, setup, migration, and roadmap.
 
-The old backend files were intentionally moved or replaced during the monorepo refactor. The working tree contains a large uncommitted refactor; do not reset, restore, or overwrite those changes. A legacy frontend repository may still exist beside this repository and was intentionally retained because deleting or merging its history was not authorized.
+The old backend files were intentionally moved or replaced during the monorepo refactor. Inspect the working tree before every change and never reset, restore, or overwrite unrelated user work. A legacy frontend repository may still exist beside this repository and was intentionally retained because deleting it was not authorized.
 
 ## Non-negotiable constraints
 
@@ -35,13 +35,13 @@ The old backend files were intentionally moved or replaced during the monorepo r
 
 ## Security incident status
 
-A MongoDB connection credential was committed in the legacy backend and remains in Git history. The current source no longer contains or accepts that credential or an insecure fallback. Treat the historical credential as compromised. External rotation is still required before deployment; follow `docs/security-incident-response.md`. Git history has not been rewritten.
+A MongoDB connection credential was committed in the legacy backend. On 2026-08-22, the repository owner explicitly authorized rewriting `main` to one sanitized root commit and force-pushing it; the local reflog and unreachable objects were pruned. Hosting caches, forks, and old clones may still retain the former object. Treat the credential as compromised. External rotation is still required before deployment; follow `docs/security-incident-response.md`.
 
 ## Delivery phases and current status
 
 There are four phases, numbered 0 through 3.
 
-### Phase 0: Security incident handling — implemented in the working tree
+### Phase 0: Security incident handling — implemented
 
 - Removed hard-coded credentials and insecure connection fallbacks.
 - Added placeholder-only `.env.example` and ensured real `.env` files remain ignored.
@@ -59,9 +59,9 @@ There are four phases, numbered 0 through 3.
 - Added multi-item orders, server-owned price calculations, product/add-on snapshots, status history, validated transitions, idempotency, indexes, and legacy dual-read support.
 - Added an idempotent, dry-run-by-default order migration at `apps/backend/scripts/migrate_orders_v2.py`.
 - Added non-root backend/frontend containers and local Docker Compose.
-- After the Phase 2 and LiteLLM changes, Ruff and formatting pass, Mypy passes for 38 backend source files, all 26 tests pass against MongoDB on Python 3.12, and the frontend type-check/production build passes. On 2026-08-22, Docker Compose rebuilt the current backend and frontend images, started the isolated full stack, returned HTTP 200 from liveness, readiness, frontend, and metrics endpoints, and confirmed that both application containers run as non-root users.
+- The current combined suite passes Ruff/format, strict Mypy for 44 backend source files, 67 tests on Python 3.12 with MongoDB 7, and frontend type-check/production build. On 2026-08-22, an isolated Docker Compose project rebuilt the current images, passed liveness/readiness/frontend/metrics/auth-boundary smoke checks, exposed the recommendation builder CLI, rejected missing configuration, and confirmed both application containers run as non-root users.
 
-Local startup intentionally fails if `JWT_SECRET` is missing, weak, or still a placeholder. Generate a stable random secret of at least 32 characters, store it only in the untracked `.env`, and recreate the backend container. Never commit that value.
+Local startup intentionally fails if either `JWT_SECRET` or `RECOMMENDATION_USER_REF_SECRET` is missing, weak, reused, or still a placeholder. Generate two independent stable random values of at least 32 characters, store them only in the untracked `.env`, and recreate the backend container. Never commit those values.
 
 ### Phase 2: Quality and observability — implemented and locally verified
 
@@ -81,15 +81,16 @@ Remaining external verification:
 - Run the GitHub Actions workflow for the first time.
 - Run LINE OAuth and webhook end-to-end tests with dedicated sandbox credentials.
 
-### Phase 3: Portfolio features — not started
+### Phase 3: Portfolio features — implemented and locally verified
 
-- SSE staff order queue.
-- LINE notifications for operational status changes.
-- Recommendation impression, click, add-to-cart, and purchase events.
-- Popularity/trending baseline before collaborative filtering.
-- Recall@K and NDCG@K offline evaluation.
+- The authenticated staff queue uses SSE snapshots, committed order updates, bounded subscriber queues, heartbeats, reconnect UX, and REST fallback.
+- LINE notifications are dispatched after committed operational status changes without making LINE availability part of the database transaction.
+- Recommendation slates are authenticated, expiring, and product-bound. Client engagement uses server dedupe keys, daily caps, viewport-qualified impressions, and a dedicated versioned HMAC pseudonym key independent of JWT signing.
+- Completed orders are the authoritative purchase source. Customers can idempotently purge their raw recommendation slates/events/counters/cache, including still-live previous key versions.
+- The CPU-only builder creates immutable time-decayed trending and bounded item-item artifacts, evaluates recent/trending/item-item on one temporal split, reports Recall/NDCG/coverage/popularity-share/cohorts, and enforces quality/size gates.
+- Serving supports explicit local/external-first/external-fallback modes, deterministic 0–100% item-item rollout, bounded last-known-good caches, recent-catalog fallback, atomic activation, validated rollback, and active/previous model retention.
 
-Do not start Phase 3 until Phase 2 is complete and stable.
+Remaining external/operational work: observe the GitHub Actions run, rotate the historically exposed MongoDB credential outside the repository, validate LINE flows with dedicated sandbox credentials, build a model from representative deployment data, and increase personalized rollout only after reviewing offline and live metrics.
 
 ## LLM provider note
 
@@ -133,6 +134,6 @@ Runtime endpoints:
 
 1. Read this file, `README.md`, and `docs/security-incident-response.md`.
 2. Inspect the complete working tree and current diff before making changes.
-3. Inspect the first GitHub Actions result when the working tree is published with explicit authorization.
-4. Fix any CI portability issue before treating the GitHub check as verified.
-5. Continue to Phase 3 only after the Phase 2 revision is stable, and report changed files, commands, results, and remaining risks in Thai.
+3. Inspect the first GitHub Actions result and fix any portability issue before treating the remote check as verified.
+4. Validate LINE OAuth, webhook, and status notifications with dedicated sandbox credentials.
+5. Run a recommendation shadow build on representative data, review the gate output, then use 5%, 25%, and 100% rollout checkpoints with rollback readiness.

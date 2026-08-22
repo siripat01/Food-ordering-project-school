@@ -9,8 +9,10 @@ from app.core.config import Settings
 from app.core.security import TokenError, TokenType, decode_token
 from app.db.mongodb import MongoDatabase
 from app.domain.users import CurrentUser, Role
+from app.services.order_updates import OrderEventBroker
 from app.services.orders import OrderService
 from app.services.products import ProductService
+from app.services.recommendations import RecommendationService
 from app.services.users import UserService
 
 
@@ -32,6 +34,14 @@ async def get_product_service(request: Request) -> ProductService:
 
 async def get_order_service(request: Request) -> OrderService:
     return cast(OrderService, request.app.state.orders)
+
+
+async def get_order_event_broker(request: Request) -> OrderEventBroker:
+    return cast(OrderEventBroker, request.app.state.order_events)
+
+
+async def get_recommendation_service(request: Request) -> RecommendationService:
+    return cast(RecommendationService, request.app.state.recommendations)
 
 
 async def get_current_user(

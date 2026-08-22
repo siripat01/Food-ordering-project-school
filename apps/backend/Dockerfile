@@ -14,6 +14,7 @@ COPY requirements.txt ./
 RUN python -m pip install --requirement requirements.txt
 
 COPY --chown=app:app app ./app
+COPY --chown=app:app scripts ./scripts
 
 USER app
 EXPOSE 8000

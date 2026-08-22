@@ -8,7 +8,17 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import admin, auth, health, line, metrics, orders, products, staff
+from app.api.routes import (
+    admin,
+    auth,
+    health,
+    line,
+    metrics,
+    orders,
+    products,
+    recommendations,
+    staff,
+)
 from app.core.config import Settings, get_settings
 from app.core.middleware import RequestIDMiddleware
 from app.core.observability import ApplicationMetrics, configure_logging
@@ -24,8 +34,15 @@ from app.integrations.agent.service import CustomerAgentService
 from app.integrations.agent.tools import CustomerToolFactory
 from app.integrations.line import LineBotClient, LineOAuthClient
 from app.services.oauth import OAuthStateService
+from app.services.order_updates import (
+    LineOrderStatusNotifier,
+    OrderEventBroker,
+    OrderUpdateDispatcher,
+)
 from app.services.orders import OrderService
 from app.services.products import ProductService
+from app.services.recommendation_runtime import RecommendationModelRuntime
+from app.services.recommendations import RecommendationService
 from app.services.users import UserService
 from app.services.webhooks import WebhookEventService
 
@@ -44,6 +61,7 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
         http_client: httpx.AsyncClient | None = None
         line_bot = LineBotClient(resolved_settings)
         customer_agent: CustomerAgentService | None = None
+        order_updates: OrderUpdateDispatcher | None = None
         try:
             await db.connect()
             http_client = httpx.AsyncClient(
@@ -55,7 +73,36 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
             app.state.http_client = http_client
             app.state.users = UserService(db)
             app.state.products = ProductService(db)
-            app.state.orders = OrderService(db, metrics=application_metrics)
+            app.state.recommendation_runtime = RecommendationModelRuntime(
+                db=db,
+                settings=resolved_settings,
+                metrics=application_metrics,
+            )
+            app.state.recommendations = RecommendationService(
+                db=db,
+                products=app.state.products,
+                settings=resolved_settings,
+                http_client=http_client,
+                metrics=application_metrics,
+                runtime=app.state.recommendation_runtime,
+            )
+            app.state.order_events = OrderEventBroker(
+                queue_size=resolved_settings.sse_subscriber_queue_size
+            )
+            order_updates = OrderUpdateDispatcher(
+                broker=app.state.order_events,
+                notifier=LineOrderStatusNotifier(
+                    settings=resolved_settings,
+                    users=app.state.users,
+                    line_bot=line_bot,
+                ),
+                recommendations=app.state.recommendations,
+            )
+            app.state.orders = OrderService(
+                db,
+                metrics=application_metrics,
+                updates=order_updates,
+            )
             app.state.oauth_states = OAuthStateService(db, resolved_settings)
             app.state.webhooks = WebhookEventService(db)
             app.state.line_oauth = LineOAuthClient(resolved_settings, http_client)
@@ -70,6 +117,8 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
         finally:
             if customer_agent:
                 await customer_agent.close()
+            if order_updates:
+                await order_updates.close()
             await line_bot.close()
             if http_client:
                 await http_client.aclose()
@@ -122,6 +171,7 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
     application.include_router(health.router, prefix=api_prefix)
     application.include_router(auth.router, prefix=api_prefix)
     application.include_router(products.router, prefix=api_prefix)
+    application.include_router(recommendations.router, prefix=api_prefix)
     application.include_router(orders.router, prefix=api_prefix)
     application.include_router(staff.router, prefix=api_prefix)
     application.include_router(admin.router, prefix=api_prefix)

@@ -35,6 +35,9 @@ async def real_mongodb_app() -> AsyncIterator[tuple[FastAPI, Settings]]:
         mongodb_products_database=f"test_products_{suffix}",
         mongodb_orders_database=f"test_orders_{suffix}",
         jwt_secret="integration-test-secret-0123456789abcdef",
+        recommendation_user_ref_secret=(
+            "integration-recommendation-ref-secret-0123456789abcdef"
+        ),
         cookie_secure=False,
         log_json=False,
     )
@@ -137,14 +140,68 @@ async def test_real_mongodb_order_flow_is_isolated_and_idempotent(
             f"/api/v1/orders/{first.json()['id']}",
             headers={"Authorization": f"Bearer {other_token}"},
         )
+        recommendations = await client.get(
+            "/api/v1/recommendations?limit=3",
+            headers={"Authorization": f"Bearer {customer_token}"},
+        )
+        recommendation_event = {
+            "event_type": "click",
+            "product_id": str(product_id),
+            "recommendation_id": recommendations.json()["recommendation_id"],
+        }
+        first_event = await client.post(
+            "/api/v1/recommendations/events",
+            headers={"Authorization": f"Bearer {customer_token}"},
+            json=recommendation_event,
+        )
+        cross_user_event = await client.post(
+            "/api/v1/recommendations/events",
+            headers={"Authorization": f"Bearer {other_token}"},
+            json=recommendation_event,
+        )
+        duplicate_event = await client.post(
+            "/api/v1/recommendations/events",
+            headers={"Authorization": f"Bearer {customer_token}"},
+            json=recommendation_event,
+        )
 
     assert first.status_code == 201
     assert first.json()["total"] == 120.0
     assert duplicate.status_code == 200
     assert duplicate.json()["id"] == first.json()["id"]
     assert cross_user.status_code == 404
+    assert recommendations.status_code == 200
+    assert recommendations.json()["products"][0]["id"] == str(product_id)
+    assert first_event.status_code == 202
+    assert first_event.json()["duplicate"] is False
+    assert duplicate_event.status_code == 202
+    assert duplicate_event.json()["duplicate"] is True
+    assert cross_user_event.status_code == 404
     assert await db.orders.count_documents({}) == 1
+    assert await db.recommendation_events.count_documents({}) == 1
+    assert await db.recommendation_slates.count_documents({}) == 1
+    stored_event = await db.recommendation_events.find_one({})
+    assert stored_event is not None
+    assert stored_event["rank"] == 1
+    assert stored_event["strategy"] == recommendations.json()["strategy"]
+    assert "weight" not in stored_event
+    assert "eventId" not in stored_event
     order_indexes = await db.orders.index_information()
     oauth_indexes = await db.oauth_states.index_information()
+    recommendation_indexes = await db.recommendation_events.index_information()
+    slate_indexes = await db.recommendation_slates.index_information()
     assert "uniq_order_idempotency" in order_indexes
     assert oauth_indexes["ttl_oauth_state"]["expireAfterSeconds"] == 0
+    assert "uniq_recommendation_event_dedupe" in recommendation_indexes
+    assert slate_indexes["ttl_recommendation_slate"]["expireAfterSeconds"] == 0
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        purge = await client.delete(
+            "/api/v1/recommendations/data",
+            headers={"Authorization": f"Bearer {customer_token}"},
+        )
+
+    assert purge.status_code == 204
+    assert await db.recommendation_events.count_documents({}) == 0
+    assert await db.recommendation_slates.count_documents({}) == 0
+    assert await db.recommendation_event_counters.count_documents({}) == 0

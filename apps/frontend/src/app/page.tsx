@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 import Loading from "./components/Loading";
 import Navbar from "./components/Navbar";
-import ProductImage from "./components/ProductImage";
+import RecommendProduct from "./components/RecommendProduct";
 import api from "./libs/axios";
 import { useUserStore } from "./store/user";
 
@@ -80,17 +80,7 @@ export default function Home() {
           ) : products.length === 0 ? (
             <div className="surface-card p-8 text-center text-[var(--muted)]">ร้านกำลังเตรียมเมนูใหม่ กลับมาดูอีกครั้งเร็ว ๆ นี้</div>
           ) : (
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-              {products.map((product) => (
-                <Link key={product.id} href={`/order/${product.id}`} className="surface-card group overflow-hidden transition-transform hover:-translate-y-1">
-                  <ProductImage imageUrl={product.image_url} name={product.name} className="h-52 w-full transition-transform duration-300 group-hover:scale-[1.03]" />
-                  <span className="flex items-center justify-between gap-4 p-5">
-                    <strong className="text-lg">{product.name}</strong>
-                    <span className="font-black text-[var(--brand)]">฿{product.price.toFixed(2)}</span>
-                  </span>
-                </Link>
-              ))}
-            </div>
+            <RecommendProduct fallbackProducts={products} />
           )}
         </div>
       </section>

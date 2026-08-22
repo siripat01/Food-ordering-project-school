@@ -6,7 +6,7 @@ This runbook covers configuration, deployment, health checks, observability, mig
 
 ## Before the first deployment
 
-1. Complete the external MongoDB credential rotation in the [Credential Incident Runbook](security-incident-response.md). The credential present in Git history must be treated as compromised.
+1. Complete the external MongoDB credential rotation in the [Credential Incident Runbook](security-incident-response.md). The sanitized history rewrite does not revoke copies retained by hosting caches, forks, or old clones.
 2. Store production secrets in the deployment platform's secret manager, not in the repository or image.
 3. Use HTTPS public URLs.
 4. Set `APP_ENV=production` and keep `COOKIE_SECURE=true`.
@@ -20,17 +20,19 @@ This runbook covers configuration, deployment, health checks, observability, mig
 
 | Group | Important variables |
 | --- | --- |
-| Core | `APP_ENV`, `MONGODB_URI`, `JWT_SECRET` |
+| Core | `APP_ENV`, `MONGODB_URI`, `JWT_SECRET`, `RECOMMENDATION_USER_REF_SECRET` |
 | Public URLs | `FRONTEND_URL`, `BACKEND_URL`, `CORS_ORIGINS`, `COOKIE_SECURE` |
-| Logging and metrics | `LOG_LEVEL`, `LOG_JSON`, `METRICS_ENABLED` |
+| Logging, metrics, SSE | `LOG_LEVEL`, `LOG_JSON`, `METRICS_ENABLED`, `SSE_*` |
 | LINE | `LINE_ENABLED`, channel credentials, login credentials, `LINE_REDIRECT_URI` |
 | LLM | `LLM_ENABLED`, `LLM_API_KEY`, base URL, model tiers, routing, limits, cache, cost inputs |
-| Recommender | `RECOMMENDER_ENABLED`, `RECOMMENDER_URL`, timeout |
+| Recommender | Provider mode/URL, dedicated pseudonym key, retention/caps, rollout, artifact/cache/profile bounds |
 | Frontend build | `NEXT_PUBLIC_API_URL` |
 
-Startup fails intentionally when required values are missing, the JWT secret is weak or a placeholder, production cookies are insecure, or an enabled integration is incomplete. Do not work around this validation.
+Startup fails intentionally when required values are missing, either required secret is weak/reused as a placeholder, production cookies are insecure, or an enabled integration is incomplete. Do not work around this validation.
 
 `NEXT_PUBLIC_API_URL` is embedded during the frontend build. Rebuild the frontend when this value changes.
+
+When rotating `RECOMMENDATION_USER_REF_SECRET`, increment `RECOMMENDATION_USER_REF_KEY_VERSION` and temporarily map the old version to its old key in `RECOMMENDATION_USER_REF_PREVIOUS_SECRETS`. Keep old keys in the secret manager until the event/slate retention windows expire so authenticated privacy purge can derive every still-live pseudonym. Current and previous recommendation keys must be distinct and must never equal `JWT_SECRET`.
 
 ## Container deployment
 
@@ -70,6 +72,8 @@ curl --fail https://api.example.com/api/v1/health/ready
 - Remove an unready instance from traffic. Do not restart it repeatedly solely because MongoDB is temporarily unavailable.
 
 The frontend and API should be smoke-tested through their public ingress after deployment. OpenAPI `/docs` is intentionally disabled in production.
+
+The staff stream uses `text/event-stream`. Disable proxy buffering for `/api/v1/staff/orders/stream`, preserve long-lived connections, and set an idle timeout longer than `SSE_HEARTBEAT_SECONDS`. SSE fan-out is process-local; keep one backend replica for this portfolio deployment unless a shared event transport is deliberately introduced.
 
 ## Logs and metrics
 
@@ -129,11 +133,22 @@ Application rollback should be image-based:
 5. Do not automatically roll back database documents written in the new schema; the dual-read design is intended to keep them readable.
 6. If data restoration is required, stop writes and use the provider's reviewed restore procedure. Do not improvise destructive MongoDB commands.
 
+Recommendation rollback does not require an application or data rollback. Switch the active pointer to a retained, validated version:
+
+```bash
+cd apps/backend
+.venv/bin/python -m scripts.build_recommendation_model \
+  --write --rollback-version MODEL_VERSION
+```
+
+Keep `RECOMMENDATION_ITEM_ITEM_ROLLOUT_PERCENT=0` while shadow-building. Increase it through reviewed 5%, 25%, and 100% stages. A failed or out-of-bounds build never replaces the active model; online serving falls through to materialized trending and then recent available products.
+
 ## Common startup failures
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | `JWT_SECRET must be a generated random value` | Placeholder or weak secret | Generate a stable random value of at least 32 characters in the secret manager and recreate the backend. |
+| `RECOMMENDATION_USER_REF_SECRET must be a generated random value` | Missing, reused placeholder, or weak recommendation pseudonym key | Generate an independent stable random value of at least 32 characters; do not reuse `JWT_SECRET`. |
 | Missing `MONGODB_URI` or connection timeout | Missing value, wrong Compose hostname, network policy, or revoked user | Use `mongo` as the host inside local Compose and `localhost` only for host-native development; then verify provider access. |
 | Readiness returns `503` | MongoDB ping failed | Inspect database availability and network access; liveness may remain healthy. |
 | Browser CORS error | Public frontend origin is absent or mismatched | Add the exact scheme, host, and port to `CORS_ORIGINS`; never use `*` with credentials. |
@@ -159,4 +174,4 @@ Application rollback should be image-based:
 - The first GitHub Actions result has not been observed yet.
 - LINE OAuth and webhook behavior still require a real sandbox end-to-end test.
 - Metrics are process-local, and agent memory/cache is not shared across replicas.
-- SSE queue updates and automatic LINE status notifications are not implemented.
+- SSE fan-out and recommendation caches are process-local. Recommendation replicas converge through the shared active-model pointer in MongoDB.

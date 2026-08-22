@@ -26,15 +26,23 @@ from app.domain.orders import (
 )
 from app.domain.products import ProductStatus
 from app.domain.users import Role
+from app.services.order_updates import OrderUpdateDispatcher
 from app.services.products import ProductService
 
 logger = logging.getLogger(__name__)
 
 
 class OrderService:
-    def __init__(self, db: MongoDatabase, *, metrics: ApplicationMetrics | None = None) -> None:
+    def __init__(
+        self,
+        db: MongoDatabase,
+        *,
+        metrics: ApplicationMetrics | None = None,
+        updates: OrderUpdateDispatcher | None = None,
+    ) -> None:
         self.db = db
         self.metrics = metrics
+        self.updates = updates
 
     @staticmethod
     def _aware(value: datetime | None, fallback: datetime) -> datetime:
@@ -250,6 +258,8 @@ class OrderService:
             "order_created",
             extra={"order_id": order.id, "order_status": order.status.value},
         )
+        if self.updates:
+            self.updates.publish(order)
         return order, True
 
     async def get(self, order_id: str) -> OrderResponse:
@@ -268,12 +278,17 @@ class OrderService:
         docs = await self.db.orders.find(query).sort("createdAt", -1).limit(100).to_list()
         return OrderListResponse(orders=[self.to_response(doc) for doc in docs])
 
-    async def list_queue(self, *, status: OrderStatus | None = None) -> OrderListResponse:
+    async def list_queue(
+        self,
+        *,
+        status: OrderStatus | None = None,
+        include_terminal: bool = False,
+    ) -> OrderListResponse:
         query: dict[str, Any] = {}
         if status:
             legacy_values = [key for key, value in LEGACY_STATUS_MAP.items() if value is status]
             query["status"] = {"$in": legacy_values}
-        else:
+        elif not include_terminal:
             query["status"] = {
                 "$in": [
                     OrderStatus.PENDING.value,
@@ -283,7 +298,13 @@ class OrderService:
                     OrderStatus.READY.value,
                 ]
             }
-        docs = await self.db.orders.find(query).sort("createdAt", 1).limit(200).to_list()
+        sort_direction = -1 if include_terminal else 1
+        docs = (
+            await self.db.orders.find(query)
+            .sort("createdAt", sort_direction)
+            .limit(200)
+            .to_list()
+        )
         return OrderListResponse(orders=[self.to_response(doc) for doc in docs])
 
     async def cancel_own(self, *, order_id: str, user_id: str) -> OrderResponse:
@@ -320,6 +341,8 @@ class OrderService:
                 "order_status_changed",
                 extra={"order_id": order.id, "order_status": order.status.value},
             )
+            if self.updates:
+                self.updates.publish(order)
             return order
         existing = await self.db.orders.find_one({"_id": object_id, "userId": user_id})
         if existing is None:
@@ -376,4 +399,6 @@ class OrderService:
             "order_status_changed",
             extra={"order_id": order.id, "order_status": order.status.value},
         )
+        if self.updates:
+            self.updates.publish(order)
         return order

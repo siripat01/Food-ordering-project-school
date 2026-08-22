@@ -57,11 +57,19 @@ The **My orders** page shows only orders owned by the authenticated customer and
 Staff and admins see **Shop queue** in the navigation bar.
 
 1. Open `/admin`.
-2. Review active orders, ordered from oldest to newest.
+2. Review live updates, operational counts, status filters, notes, and orders sorted from oldest to newest.
 3. Select one of the allowed next states shown on the order card.
 4. If an update conflicts with another staff action, refresh the queue before retrying.
 
-The queue excludes completed and cancelled orders by default. Status transitions are validated again by the backend; changing the browser request cannot bypass the lifecycle.
+The page opens an authenticated SSE stream, reconnects automatically, and retains a manual REST refresh fallback. It can show recent terminal orders for operational review. Status transitions are validated again by the backend; changing the browser request cannot bypass the lifecycle.
+
+## Recommendations and privacy
+
+Authenticated customers may see a recent-catalog fallback, materialized local trending ranking, personalized item-item ranking, or feature-flagged external recommendation on the home page. Item-item delivery is controlled by a deterministic rollout percentage and defaults to disabled until an operator builds, evaluates, and activates a model.
+
+The browser records an impression only after at least half of a recommendation card remains visible for 750 milliseconds. Impression, click, and order-intent delivery is best-effort and never blocks navigation or order creation. Events contain the product and served-slate identifiers but no user ID or token; the server resolves the authenticated user, validates that the product belonged to that user's unexpired slate, derives attribution and deduplication fields, and applies daily caps. Completed orders remain the authoritative purchase signal.
+
+An authenticated customer can call `DELETE /api/v1/recommendations/data` to remove their raw recommendation slates, events, counters, and cached rankings. The endpoint derives the customer from the session and cannot be used to target another account. Aggregate product-model artifacts contain no user-level history.
 
 ## Admin flow
 
@@ -85,7 +93,7 @@ When both LINE and LLM integrations are enabled:
 
 The customer assistant cannot invoke staff or admin operations. It cannot choose a user ID, role, or authoritative price. Duplicate LINE webhook deliveries are ignored, and order creation uses the webhook event as part of its idempotency context.
 
-Automatic LINE notifications for later order-status changes are not implemented yet.
+When LINE is enabled and the account has a LINE identity, the system pushes a concise notification after the order is confirmed, preparing, ready, completed, or cancelled. Notification delivery happens after the database transition, so an upstream LINE failure does not undo the order status.
 
 ## Common problems
 

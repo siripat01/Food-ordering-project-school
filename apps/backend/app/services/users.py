@@ -55,6 +55,19 @@ class UserService:
         doc = await self.db.users.find_one({"line_user_id": line_user_id})
         return self.to_current_user(doc) if doc else None
 
+    async def get_line_user_id(self, user_id: str) -> str | None:
+        try:
+            object_id = parse_object_id(user_id)
+        except ValueError:
+            return None
+        doc = await self.db.users.find_one(
+            {"_id": object_id, "active": {"$ne": False}},
+            {"line_user_id": 1},
+        )
+        if doc is None or not isinstance(doc.get("line_user_id"), str):
+            return None
+        return str(doc["line_user_id"])
+
     async def upsert_line_user(
         self,
         *,

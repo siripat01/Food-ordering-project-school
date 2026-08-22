@@ -26,6 +26,12 @@ Current application metrics:
 - `food_ordering_orders_created_total`
 - `food_ordering_order_value_total`
 - `food_ordering_order_status_changes_total`
+- `food_ordering_recommendations_served_total`
+- `food_ordering_recommendation_events_total`
+- `food_ordering_recommendation_duration_seconds`
+- `food_ordering_recommendation_fallbacks_total`
+- `food_ordering_recommendation_cache_total`
+- `food_ordering_recommendation_active_model_age_seconds`
 - `food_ordering_llm_request_duration_seconds`
 - `food_ordering_llm_errors_total`
 - `food_ordering_llm_tokens_total`
@@ -34,6 +40,8 @@ Current application metrics:
 Routes use route templates instead of raw paths to prevent unbounded labels. No user, request, order, prompt, or credential value is used as a metric label. Order IDs remain log correlation fields, not metric labels.
 
 Estimated LLM cost depends on `LLM_INPUT_COST_PER_MILLION` and `LLM_OUTPUT_COST_PER_MILLION`. Both default to zero because pricing varies by provider and model. Set them from the provider's current pricing during deployment review.
+
+Recommendation metrics use only bounded `strategy`, `event_type`, fallback-reason, cache, and cache-outcome labels. Product IDs, user references, recommendation IDs, model versions, and model inputs must remain out of metric labels. Conversion funnels are derived from served/event counters without introducing per-user or per-slate labels.
 
 ## Operational checks
 

@@ -35,7 +35,11 @@ Browser clients should use the LINE Login flow and send cookies with credentials
 | `GET` | `/orders/{order_id}` | Authenticated | Read an allowed order; customers are restricted to ownership |
 | `POST` | `/orders/{order_id}/cancel` | Customer owner | Cancel an eligible owned order |
 | `GET` | `/staff/orders` | Staff or admin | List the operational queue |
+| `GET` | `/staff/orders/stream` | Staff or admin | SSE snapshot, committed updates, and heartbeats |
 | `PATCH` | `/staff/orders/{order_id}/status` | Staff or admin | Apply a valid status transition |
+| `GET` | `/recommendations` | Customer | Return item-item, trending, external, or recent available products |
+| `POST` | `/recommendations/events` | Customer | Idempotently record an allowed engagement event |
+| `DELETE` | `/recommendations/data` | Customer | Idempotently purge the customer's raw recommendation data |
 | `GET` | `/admin/users` | Admin | List users |
 | `PATCH` | `/admin/users/{user_id}/role` | Admin | Change another user's role |
 | `PATCH` | `/admin/users/{user_id}/active` | Admin | Activate or deactivate another user |
@@ -117,6 +121,24 @@ completed -> terminal
 cancelled -> terminal
 ```
 
+### Subscribe to the staff stream
+
+The browser uses the secure session cookie and `EventSource` with credentials. Non-browser clients may use a Bearer token:
+
+```bash
+curl --no-buffer \
+  --header 'Authorization: Bearer <staff-access-token>' \
+  http://localhost:8000/api/v1/staff/orders/stream
+```
+
+Named events are `snapshot`, `order.updated`, and `heartbeat`. The snapshot data contains `{ "orders": [...] }`; an update contains `{ "order": {...} }`. Proxies must not buffer this response.
+
+### Recommendations and events
+
+`GET /recommendations?limit=3` returns a server-generated `recommendation_id`, selected strategy, and available products. Client events accept only `recommendation_id`, `product_id`, and `impression`, `click`, or `add_to_cart`; identity, rank, placement, model version, timestamp, and dedupe key are derived from the authenticated served slate. `purchase` is generated exclusively from a completed order. Repeating the same user/slate/product/type event returns `202` with `duplicate: true` and does not insert a second event.
+
+`DELETE /recommendations/data` removes the authenticated customer's raw slates, events, daily counters, and short-lived cached rankings. It is idempotent and never accepts a user ID. During pseudonym-key rotation, operators must retain the prior keys in `RECOMMENDATION_USER_REF_PREVIOUS_SECRETS` until the configured raw-data retention window has elapsed so the purge covers every live key version. Product-level aggregate model artifacts contain no user-level data and are not deleted.
+
 ### Create a product as admin
 
 ```bash
@@ -164,6 +186,7 @@ The same correlation value is returned in the `X-Request-ID` header. Validation 
 
 - Order idempotency is scoped to the authenticated user and `Idempotency-Key`.
 - LINE webhook deduplication is scoped to the webhook event ID.
+- Recommendation engagement deduplication uses a server-derived user/slate/product/type key. Completed-order purchase events use a stable order/product key.
 - Order status updates compare the previously read status in the atomic update.
 - A concurrent transition returns `409`; reload the order before deciding whether to retry.
 

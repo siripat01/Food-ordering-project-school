@@ -67,6 +67,17 @@ class ProductService:
         )
         return ProductListResponse(products=[self.to_response(doc) for doc in docs])
 
+    async def list_recent_available(self, *, limit: int) -> ProductListResponse:
+        docs = (
+            await self.db.products.find(
+                {"status": {"$in": ["available", "avalible", "active"]}}
+            )
+            .sort("createdAt", -1)
+            .limit(limit)
+            .to_list()
+        )
+        return ProductListResponse(products=[self.to_response(doc) for doc in docs])
+
     async def list_all(self) -> ProductListResponse:
         docs = await self.db.products.find({}).sort("createdAt", -1).to_list()
         return ProductListResponse(products=[self.to_response(doc) for doc in docs])
@@ -76,6 +87,26 @@ class ProductService:
         if doc is None:
             raise NotFoundError("Product not found")
         return self.to_response(doc)
+
+    async def get_available_by_ids(self, product_ids: list[str]) -> list[ProductResponse]:
+        if not product_ids:
+            return []
+        valid_ids = []
+        for product_id in dict.fromkeys(product_ids):
+            try:
+                valid_ids.append(parse_object_id(product_id))
+            except ValueError:
+                continue
+        if not valid_ids:
+            return []
+        docs = await self.db.products.find(
+            {
+                "_id": {"$in": valid_ids},
+                "status": {"$in": ["available", "avalible", "active"]},
+            }
+        ).to_list()
+        products_by_id = {str(doc["_id"]): self.to_response(doc) for doc in docs}
+        return [products_by_id[value] for value in product_ids if value in products_by_id]
 
     async def create(self, payload: ProductCreate) -> ProductResponse:
         now = utc_now()

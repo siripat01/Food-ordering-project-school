@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Literal, Self
 
@@ -42,6 +43,8 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_json: bool = True
     metrics_enabled: bool = True
+    sse_heartbeat_seconds: int = Field(default=15, ge=5, le=60)
+    sse_subscriber_queue_size: int = Field(default=50, ge=10, le=500)
 
     line_enabled: bool = False
     line_channel_secret: SecretStr | None = None
@@ -97,6 +100,27 @@ class Settings(BaseSettings):
     recommender_enabled: bool = False
     recommender_url: AnyHttpUrl | None = None
     recommender_timeout_seconds: float = Field(default=3, ge=0.5, le=15)
+    recommender_mode: Literal["local", "external_first", "external_fallback"] = "local"
+    recommendation_user_ref_secret: SecretStr = Field(min_length=32)
+    recommendation_user_ref_key_version: str = Field(default="v1", pattern=r"^v[1-9][0-9]*$")
+    recommendation_user_ref_previous_secrets: dict[str, SecretStr] = Field(default_factory=dict)
+    recommendation_event_retention_days: int = Field(default=180, ge=30, le=730)
+    recommendation_slate_retention_days: int = Field(default=7, ge=1, le=30)
+    recommendation_daily_impression_cap: int = Field(default=10, ge=1, le=100)
+    recommendation_daily_click_cap: int = Field(default=5, ge=1, le=50)
+    recommendation_daily_add_to_cart_cap: int = Field(default=3, ge=1, le=20)
+    recommendation_item_item_rollout_percent: int = Field(default=0, ge=0, le=100)
+    recommendation_model_poll_seconds: int = Field(default=30, ge=5, le=300)
+    recommendation_result_cache_ttl_seconds: int = Field(default=30, ge=1, le=300)
+    recommendation_result_cache_max_entries: int = Field(default=500, ge=10, le=10_000)
+    recommendation_model_max_products: int = Field(default=10_000, ge=100, le=100_000)
+    recommendation_model_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        le=100 * 1024 * 1024,
+    )
+    recommendation_profile_order_limit: int = Field(default=50, ge=1, le=200)
+    recommendation_profile_product_limit: int = Field(default=20, ge=1, le=50)
 
     @field_validator("mongodb_uri")
     @classmethod
@@ -109,6 +133,15 @@ class Settings(BaseSettings):
     @field_validator("jwt_secret")
     @classmethod
     def reject_placeholder_jwt_secret(cls, value: SecretStr) -> SecretStr:
+        return cls._validate_generated_secret(value, "JWT_SECRET")
+
+    @field_validator("recommendation_user_ref_secret")
+    @classmethod
+    def reject_placeholder_recommendation_secret(cls, value: SecretStr) -> SecretStr:
+        return cls._validate_generated_secret(value, "RECOMMENDATION_USER_REF_SECRET")
+
+    @staticmethod
+    def _validate_generated_secret(value: SecretStr, variable_name: str) -> SecretStr:
         secret = value.get_secret_value()
         normalized = secret.lower().strip()
         if normalized.startswith("replace-") or normalized in {
@@ -116,9 +149,11 @@ class Settings(BaseSettings):
             "mysecret",
             "secret",
         }:
-            raise ValueError("JWT_SECRET must be a generated random value, not a placeholder")
+            raise ValueError(
+                f"{variable_name} must be a generated random value, not a placeholder"
+            )
         if len(set(secret)) < 12:
-            raise ValueError("JWT_SECRET does not contain enough character diversity")
+            raise ValueError(f"{variable_name} does not contain enough character diversity")
         return value
 
     @field_validator("cors_origins")
@@ -147,6 +182,34 @@ class Settings(BaseSettings):
             raise ValueError("LLM_ENABLED requires LLM_API_KEY")
         if self.recommender_enabled and not self.recommender_url:
             raise ValueError("RECOMMENDER_ENABLED requires RECOMMENDER_URL")
+        if self.recommender_mode != "local" and not self.recommender_enabled:
+            raise ValueError("External RECOMMENDER_MODE requires RECOMMENDER_ENABLED=true")
+        previous_values: set[str] = set()
+        current_secret = self.recommendation_user_ref_secret.get_secret_value()
+        jwt_secret = self.jwt_secret.get_secret_value()
+        if current_secret == jwt_secret:
+            raise ValueError("Recommendation pseudonym secret must not reuse JWT_SECRET")
+        for version, secret in self.recommendation_user_ref_previous_secrets.items():
+            if not re.fullmatch(r"v[1-9][0-9]*", version):
+                raise ValueError(
+                    "RECOMMENDATION_USER_REF_PREVIOUS_SECRETS keys must be versions like v1"
+                )
+            if version == self.recommendation_user_ref_key_version:
+                raise ValueError(
+                    "Current recommendation key version cannot also be a previous version"
+                )
+            self._validate_generated_secret(
+                secret,
+                "RECOMMENDATION_USER_REF_PREVIOUS_SECRETS",
+            )
+            value = secret.get_secret_value()
+            if value == jwt_secret:
+                raise ValueError(
+                    "Previous recommendation pseudonym secrets must not reuse JWT_SECRET"
+                )
+            if value == current_secret or value in previous_values:
+                raise ValueError("Recommendation pseudonym secrets must be distinct")
+            previous_values.add(value)
         return self
 
     @property

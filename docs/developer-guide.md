@@ -39,7 +39,7 @@ From the repository root:
 cp .env.example .env
 ```
 
-Replace `JWT_SECRET` in the untracked `.env` with a generated random value of at least 32 characters. The placeholder is intentionally rejected. Keep `LINE_ENABLED=false`, `LLM_ENABLED=false`, and `RECOMMENDER_ENABLED=false` until their complete configuration is available.
+Replace both `JWT_SECRET` and `RECOMMENDATION_USER_REF_SECRET` in the untracked `.env` with independent generated random values of at least 32 characters. The placeholders are intentionally rejected. Keep `LINE_ENABLED=false`, `LLM_ENABLED=false`, and `RECOMMENDER_ENABLED=false` until their complete configuration is available.
 
 Start the stack:
 
@@ -72,7 +72,7 @@ python3.12 -m venv .venv
 cp ../../.env.example .env
 ```
 
-For a MongoDB process running on the host, change the untracked backend `.env` from `mongodb://mongo:27017` to `mongodb://localhost:27017`. Replace the JWT placeholder and keep unused integrations disabled.
+For a MongoDB process running on the host, change the untracked backend `.env` from `mongodb://mongo:27017` to `mongodb://localhost:27017`. Replace both required secret placeholders and keep unused integrations disabled.
 
 Start the API:
 
@@ -126,6 +126,16 @@ docker compose up --detach --wait
 ```
 
 The GitHub Actions workflow runs the same lint, type-check, test, frontend-build, and container-startup boundaries.
+
+Build and evaluate the bounded CPU-only recommendation artifacts without exporting user identities:
+
+```bash
+cd apps/backend
+.venv/bin/python -m scripts.build_recommendation_model
+.venv/bin/python -m scripts.evaluate_recommendations --days 180 --test-days 14
+```
+
+Both commands are read-only by default. After reviewing the temporal metrics and activation decision, use `python -m scripts.build_recommendation_model --write --activate`. See the [CPU Recommendation System](recommendation-system-plan.md) for artifact lifecycle, rollout, rollback, and operational bounds.
 
 ## Security invariants
 
@@ -181,3 +191,4 @@ Before using `--apply`, follow the backup and verification sequence in the [Oper
 - [Operations Runbook](operations-runbook.md)
 - [LLM Gateway](llm-gateway.md)
 - [Observability Runbook](observability.md)
+- [CPU Recommendation Plan](recommendation-system-plan.md)

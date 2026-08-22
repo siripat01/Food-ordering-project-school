@@ -2,7 +2,7 @@
 
 ## Incident
 
-A MongoDB connection URI containing credentials was committed in the legacy backend file `service/order/order.py`. The value also exists in Git history. This repository intentionally does not reproduce that value.
+A MongoDB connection URI containing credentials was committed in the legacy backend file `service/order/order.py`. The current `main` branch was rewritten to one sanitized root commit on 2026-08-22, but Git hosting caches, forks, and old clones may still retain the former object. This repository intentionally does not reproduce that value.
 
 Assume the credential is compromised even if the database currently shows no suspicious activity.
 
@@ -20,17 +20,14 @@ Perform these actions in the MongoDB provider, not in this repository:
 
 Do not wait for Git history cleanup before revoking the credential. Deleting a string from the current branch does not revoke it.
 
-## Optional Git history cleanup after rotation
+## Git history cleanup status
 
-History rewriting is disruptive and is not performed automatically. Coordinate with all collaborators and repository administrators first.
+The repository owner explicitly authorized a full `main` history rewrite on 2026-08-22. The sanitized root commit was force-pushed with a lease, and the local reflog/unreachable objects were pruned. This cleanup does not revoke the credential.
 
-1. Protect a forensic backup and record the affected commit IDs privately.
-2. Ask collaborators to stop pushing and merge or close outstanding work.
-3. Use `git filter-repo` with a replacement rule or path-specific callback that removes only the exposed URI. Never place the real credential directly in a shell command or shared terminal transcript.
-4. Scan every rewritten ref locally with a secret scanner.
-5. Force-push the rewritten branches and tags only after explicit repository-owner approval.
-6. Invalidate caches/build artifacts and ask collaborators to fresh-clone instead of rebasing old clones.
-7. Request cache removal from the Git hosting provider if the old blob remains accessible.
-8. Re-run provider audit checks; history cleanup is not a substitute for rotation.
+Remaining coordination:
 
-If preserving public history is more important than removing the old blob, leave history intact after rotation and rely on the revoked credential. Document the decision in the incident record.
+1. Rotate and revoke the compromised credential externally.
+2. Ask collaborators to fresh-clone instead of merging or rebasing old clones.
+3. Remove stale build artifacts and request hosting-provider cache removal if the old blob remains accessible.
+4. Check forks and non-branch refs separately; rewriting `main` cannot remove another repository's copy.
+5. Re-run provider audit checks. History cleanup is not a substitute for rotation.
