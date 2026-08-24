@@ -123,9 +123,15 @@ Containers:
 ```bash
 docker compose build
 docker compose up --detach --wait
+
+# Validate the production image-pull contract without starting it.
+BACKEND_IMAGE=ghcr.io/example/hiwkaw-backend:sha-test \
+BACKEND_ENV_FILE=.env \
+CLOUDFLARE_TUNNEL_TOKEN_FILE=/path/to/test-token-file \
+docker compose --file compose.prod.yaml config --quiet
 ```
 
-The GitHub Actions workflow runs the same lint, type-check, test, frontend-build, and container-startup boundaries.
+The GitHub Actions workflow runs the same lint, type-check, test, frontend-build, and container-startup boundaries. Pull requests stop there. Successful `main`, SemVer-tag, and manual runs additionally publish an AMD64/ARM64 backend image to GHCR; production must deploy its immutable SHA tag or digest rather than build on the VM.
 
 Build and evaluate the bounded CPU-only recommendation artifacts without exporting user identities:
 

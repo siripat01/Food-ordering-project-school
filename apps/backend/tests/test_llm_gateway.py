@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 
 from app.core.config import Settings
 from app.integrations.agent.gateway import LiteLLMGateway
+from app.integrations.agent.service import visible_model_text
 
 
 class FakeRouter:
@@ -41,6 +42,32 @@ def gateway_settings() -> Settings:
         llm_cache_enabled=True,
         llm_cache_ttl_seconds=90,
     )
+
+
+def test_provider_reasoning_blocks_are_not_returned_to_customers() -> None:
+    assert (
+        visible_model_text("<think>private reasoning</think>\nคำตอบสำหรับลูกค้า")
+        == "คำตอบสำหรับลูกค้า"
+    )
+    assert visible_model_text("<think>unfinished private reasoning") == ""
+
+
+def test_gateway_accepts_minimax_openai_compatible_configuration() -> None:
+    settings = gateway_settings()
+    settings.llm_api_base = "https://api.minimax.io/v1"
+    settings.llm_primary_model = "minimax/MiniMax-M2.7"
+    settings.llm_complex_model = "minimax/MiniMax-M2.7"
+    settings.llm_complexity_routing_enabled = False
+    gateway = LiteLLMGateway(settings, router=FakeRouter())
+
+    deployments, fallbacks = gateway._deployment_configuration()
+
+    assert fallbacks == [{"ordering-assistant": ["ordering-assistant-fallback-1"]}]
+    assert deployments[0]["litellm_params"] == {
+        "model": "minimax/MiniMax-M2.7",
+        "api_key": "fake-provider-key",
+        "api_base": "https://api.minimax.io/v1",
+    }
 
 
 def test_gateway_builds_cost_tiers_and_fallback_model_groups() -> None:

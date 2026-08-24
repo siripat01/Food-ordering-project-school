@@ -1,0 +1,57 @@
+name: hiwkaw-production
+
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to an immutable GHCR image tag or digest}
+    pull_policy: always
+    env_file:
+      - ${BACKEND_ENV_FILE:-./deploy/backend.env}
+    restart: unless-stopped
+    init: true
+    expose:
+      - "8000"
+    networks:
+      - private
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.8.2
+    pull_policy: always
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/cloudflare_tunnel_token
+      TUNNEL_LOGLEVEL: info
+    secrets:
+      - cloudflare_tunnel_token
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    networks:
+      - private
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  private:
+    driver: bridge
+
+secrets:
+  cloudflare_tunnel_token:
+    file: ${CLOUDFLARE_TUNNEL_TOKEN_FILE:-./deploy/secrets/cloudflare-tunnel-token}

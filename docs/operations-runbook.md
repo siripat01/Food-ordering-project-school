@@ -34,31 +34,80 @@ Startup fails intentionally when required values are missing, either required se
 
 When rotating `RECOMMENDATION_USER_REF_SECRET`, increment `RECOMMENDATION_USER_REF_KEY_VERSION` and temporarily map the old version to its old key in `RECOMMENDATION_USER_REF_PREVIOUS_SECRETS`. Keep old keys in the secret manager until the event/slate retention windows expire so authenticated privacy purge can derive every still-live pseudonym. Current and previous recommendation keys must be distinct and must never equal `JWT_SECRET`.
 
-## Container deployment
+## Image publication
 
-Build without embedding a secret file in either image:
+Pull requests run backend, frontend, and local-container gates but never publish an image. A push to `main`, a `v*.*.*` tag, or an explicitly dispatched workflow publishes the backend to GHCR only after all gates pass. The frontend remains a Vercel build rooted at `apps/frontend`.
 
-```bash
-docker compose build
+The image job publishes Linux AMD64 and ARM64 manifests with OCI metadata, provenance, and an SBOM. Every publication includes an immutable full-commit tag:
+
+```text
+ghcr.io/<owner>/<repository>-backend:sha-<40-character-git-sha>
 ```
 
-Provide runtime variables through the deployment platform. For the local Compose stack only, the root untracked `.env` is loaded by the backend service.
+The job summary also records the stronger digest reference:
 
-Start and wait for health checks:
-
-```bash
-docker compose up --detach --wait
+```text
+ghcr.io/<owner>/<repository>-backend@sha256:<digest>
 ```
 
-Inspect service state and logs without exposing environment values:
+Use the digest in production when practical. The mutable `main` tag is for inspection and must not be the recorded rollback boundary. SemVer tags are also emitted for Git tags matching `v*.*.*`.
+
+If the GHCR package is private, authenticate the VM with a dedicated read-only package credential before pulling. Never use a developer password or a token with write/delete package scopes on the VM.
+
+References: [GitHub container publishing](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images) and [GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+## VM deployment through Cloudflare Tunnel
+
+Production uses [`compose.prod.yaml`](../compose.prod.yaml). It contains only the backend and `cloudflared`; MongoDB is external and the frontend is deployed by Vercel. The backend has no published host port. Cloudflare's remotely managed tunnel must route the public API hostname to `http://backend:8000` on the Compose network.
+
+`cloudflared` reads the token through `TUNNEL_TOKEN_FILE` so it does not appear in process arguments. See [Cloudflare Tunnel run parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/).
+
+Prepare deployment files on the VM without committing their populated copies:
 
 ```bash
-docker compose ps
-docker compose logs backend
-docker compose logs frontend
+cp deploy/backend.env.example deploy/backend.env
+cp deploy/compose.env.example deploy/compose.env
+mkdir -p deploy/secrets
 ```
 
-Do not use commands that print the complete container environment in shared terminals or tickets.
+Fill `deploy/backend.env` from the production secret store. Put only the remotely managed tunnel token in `deploy/secrets/cloudflare-tunnel-token`, then restrict all three files:
+
+```bash
+chmod 600 deploy/backend.env deploy/compose.env deploy/secrets/cloudflare-tunnel-token
+```
+
+Set `BACKEND_IMAGE` in `deploy/compose.env` to the digest printed by the successful GitHub Actions run. Validate the fully resolved Compose model without printing it:
+
+```bash
+docker compose --env-file deploy/compose.env --file compose.prod.yaml config --quiet
+```
+
+Pull and start the exact image:
+
+```bash
+docker compose --env-file deploy/compose.env --file compose.prod.yaml pull
+docker compose --env-file deploy/compose.env --file compose.prod.yaml up --detach --wait
+```
+
+Inspect state and bounded logs without exposing environment values:
+
+```bash
+docker compose --env-file deploy/compose.env --file compose.prod.yaml ps
+docker compose --env-file deploy/compose.env --file compose.prod.yaml logs --tail=100 backend
+docker compose --env-file deploy/compose.env --file compose.prod.yaml logs --tail=100 cloudflared
+```
+
+Do not use commands that print the complete container environment in shared terminals or tickets. Do not add a backend `ports` mapping; tunnel traffic should remain on the private Compose network.
+
+## Vercel frontend
+
+Configure the Vercel project root as `apps/frontend` and set the production build variable:
+
+```env
+NEXT_PUBLIC_API_URL=https://api.example.com/api/v1
+```
+
+Assign a stable same-site custom hostname such as `app.example.com`; configure the backend with matching `FRONTEND_URL` and `CORS_ORIGINS`. A changed `NEXT_PUBLIC_API_URL` requires a new Vercel deployment because it is embedded during the Next.js build. Do not add arbitrary `*.vercel.app` preview origins to credentialed production CORS.
 
 ## Health and readiness
 
@@ -87,11 +136,11 @@ See the [Observability Runbook](observability.md) for the metric list and redact
 
 1. Back up MongoDB and verify restore instructions.
 2. Run the complete CI boundary against the exact revision.
-3. Build immutable backend and frontend images.
-4. Apply environment and secret-manager configuration.
-5. Deploy the backend without directing production traffic to it.
-6. Wait for readiness and inspect startup logs.
-7. Deploy the frontend with the correct public API build argument.
+3. Select the immutable backend digest produced by the successful CI run.
+4. Apply backend, Compose, tunnel-token, and Vercel environment configuration.
+5. Pull and start the backend and tunnel without publishing the backend port.
+6. Wait for readiness through the public tunnel and inspect startup logs.
+7. Deploy the frontend from `apps/frontend` on Vercel with the correct public API build variable.
 8. Smoke-test public products, login if enabled, an isolated test order, staff transition, logs, and metrics.
 9. Shift traffic gradually where the platform supports it.
 10. Record the deployed revision, image digests, configuration version, and verification result without recording secret values.
@@ -128,10 +177,17 @@ Application rollback should be image-based:
 
 1. Stop traffic expansion when health or functional checks fail.
 2. Preserve logs, request IDs, order IDs, timestamps, and deployment metadata.
-3. Restore the previous known-good image and its compatible configuration.
+3. Set `BACKEND_IMAGE` to the previous known-good digest and restore its compatible configuration.
 4. Re-run liveness, readiness, and core smoke checks.
 5. Do not automatically roll back database documents written in the new schema; the dual-read design is intended to keep them readable.
 6. If data restoration is required, stop writes and use the provider's reviewed restore procedure. Do not improvise destructive MongoDB commands.
+
+Apply an image rollback with the same pull/up boundary:
+
+```bash
+docker compose --env-file deploy/compose.env --file compose.prod.yaml pull backend
+docker compose --env-file deploy/compose.env --file compose.prod.yaml up --detach --wait backend
+```
 
 Recommendation rollback does not require an application or data rollback. Switch the active pointer to a retained, validated version:
 

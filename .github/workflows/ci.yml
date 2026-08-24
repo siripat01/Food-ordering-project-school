@@ -1,9 +1,11 @@
-name: CI
+name: CI and image publish
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
 
 permissions:
   contents: read
@@ -31,8 +33,8 @@ jobs:
       run:
         working-directory: apps/backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -51,8 +53,8 @@ jobs:
       run:
         working-directory: apps/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "24.15.0"
       - run: npm install --global corepack@0.35.0
@@ -65,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Verify missing configuration fails
         run: |
           docker build --tag food-ordering-backend-ci apps/backend
@@ -94,7 +96,7 @@ jobs:
           export FOOD_ORDERING_ENV_FILE=.env.ci
           cleanup() {
             docker compose down --volumes
-            rm -f .env.ci
+            rm -f .env.ci .tunnel-token.ci
           }
           trap cleanup EXIT
           docker compose up --detach --build --wait
@@ -102,3 +104,64 @@ jobs:
           curl --fail --silent http://localhost:8000/api/v1/health/ready
           curl --fail --silent http://localhost:3000
           curl --fail --silent http://localhost:8000/metrics
+          printf '%s' 'ci-tunnel-token-placeholder' > .tunnel-token.ci
+          BACKEND_IMAGE='ghcr.io/example/hiwkaw-backend:sha-ci' \
+            BACKEND_ENV_FILE='.env.ci' \
+            CLOUDFLARE_TUNNEL_TOKEN_FILE='.tunnel-token.ci' \
+            docker compose --file compose.prod.yaml config --quiet
+
+  backend-image:
+    name: Publish backend image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [containers]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resolve lowercase GHCR image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-backend" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Build and push backend image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: apps/backend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          annotations: ${{ steps.metadata.outputs.annotations }}
+          cache-from: type=gha,scope=backend-image
+          cache-to: type=gha,mode=max,scope=backend-image
+          provenance: mode=max
+          sbom: true
+      - name: Record immutable deployment reference
+        shell: bash
+        run: |
+          echo "### Backend container" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

@@ -59,7 +59,7 @@ There are four phases, numbered 0 through 3.
 - Added multi-item orders, server-owned price calculations, product/add-on snapshots, status history, validated transitions, idempotency, indexes, and legacy dual-read support.
 - Added an idempotent, dry-run-by-default order migration at `apps/backend/scripts/migrate_orders_v2.py`.
 - Added non-root backend/frontend containers and local Docker Compose.
-- The current combined suite passes Ruff/format, strict Mypy for 44 backend source files, 67 tests on Python 3.12 with MongoDB 7, and frontend type-check/production build. On 2026-08-22, an isolated Docker Compose project rebuilt the current images, passed liveness/readiness/frontend/metrics/auth-boundary smoke checks, exposed the recommendation builder CLI, rejected missing configuration, and confirmed both application containers run as non-root users.
+- The current local suite passes Ruff/format, strict Mypy for 44 backend source files, 68 tests with the real-MongoDB marker skipped, frontend type-check/production build, and a Python 3.12 backend image build. The dedicated real-MongoDB boundary passed in the previous verified CI run. On 2026-08-22, an isolated Docker Compose project rebuilt the current images, passed liveness/readiness/frontend/metrics/auth-boundary smoke checks, exposed the recommendation builder CLI, rejected missing configuration, and confirmed both application containers run as non-root users.
 
 Local startup intentionally fails if either `JWT_SECRET` or `RECOMMENDATION_USER_REF_SECRET` is missing, weak, reused, or still a placeholder. Generate two independent stable random values of at least 32 characters, store them only in the untracked `.env`, and recreate the backend container. Never commit those values.
 
@@ -89,9 +89,19 @@ Remote verification: GitHub Actions run `32586236010` passed backend, frontend, 
 
 Remaining external/operational work: rotate the historically exposed MongoDB credential outside the repository, validate LINE flows with dedicated sandbox credentials, build a model from representative deployment data, and increase personalized rollout only after reviewing offline and live metrics.
 
+### Production delivery contract
+
+- GitHub Actions runs backend, frontend, and local-container gates for pull requests without publishing packages.
+- Successful `main`, `v*.*.*`, and manually dispatched runs publish the backend to GHCR with immutable full-commit tags, multi-architecture manifests, provenance, and SBOM metadata.
+- `compose.prod.yaml` pulls a caller-selected immutable backend reference and runs it with `cloudflared` on a private Docker network. It does not run the Vercel frontend or local MongoDB and does not publish backend port 8000.
+- Vercel builds `apps/frontend` separately with the production `NEXT_PUBLIC_API_URL`.
+- Populated `deploy/backend.env`, `deploy/compose.env`, and `deploy/secrets/` are VM-only ignored files. Their `.example` files contain placeholders only.
+
 ## LLM provider note
 
 DeepSeek and LiteLLM support are implemented through an in-process gateway at `apps/backend/app/integrations/agent/gateway.py`. LiteLLM's complexity router maps simple/medium requests to the economical model and complex/reasoning requests to the capable model, with a zero-call heuristic classifier by default and an optional cheap-LLM classifier. Provider fallbacks, retries, timeouts, and bounded opt-in local caching are separate controls. Customer-agent requests always use `no-store` because tool calls and personalized order context must not be cached. New deployments use `LLM_API_KEY`; `OPENAI_API_KEY` remains a backward-compatible input only. See `docs/llm-gateway.md`.
+
+MiniMax's OpenAI-compatible endpoint can be selected with `LLM_API_BASE=https://api.minimax.io/v1` and `minimax/` model identifiers. Final provider `<think>` blocks are removed before customer output or memory retention. Keep MiniMax disabled in production until tool-calling behavior is verified with a dedicated provider sandbox.
 
 ## Common commands
 

@@ -19,6 +19,22 @@ LLM_FALLBACK_MODELS=[]
 LLM_ROUTING_STRATEGY=simple-shuffle
 ```
 
+## MiniMax OpenAI-compatible alternative
+
+MiniMax exposes an OpenAI-compatible chat-completions endpoint and LiteLLM accepts it through the native `minimax/` provider prefix. A single-tier deployment can use:
+
+```env
+LLM_ENABLED=true
+LLM_API_KEY=replace-with-minimax-api-key
+LLM_API_BASE=https://api.minimax.io/v1
+LLM_MODEL=ordering-assistant
+LLM_PRIMARY_MODEL=minimax/MiniMax-M2.7
+LLM_COMPLEX_MODEL=minimax/MiniMax-M2.7
+LLM_COMPLEXITY_ROUTING_ENABLED=false
+```
+
+Do not infer that the high-speed model is cheaper from its name. Review current provider pricing and measured quality before assigning different MiniMax models to economical and capable tiers. The customer agent removes provider `<think>` blocks before returning or retaining final text, and it never logs reasoning. MiniMax tool calling still requires a provider sandbox end-to-end test before production enablement because the provider requires complete assistant messages during multi-turn function-call exchanges.
+
 Store `LLM_API_KEY` only in a local untracked `.env` or the deployment platform's secret manager. `OPENAI_API_KEY` remains accepted as a temporary backward-compatible input name, but new deployments should use `LLM_API_KEY`.
 
 The logical `LLM_MODEL` is passed to LiteLLM's `auto_router/complexity_router`. The router maps `SIMPLE` and `MEDIUM` work to `LLM_PRIMARY_MODEL`, and maps `COMPLEX` and `REASONING` work to `LLM_COMPLEX_MODEL`. The default heuristic classifier makes no external API call. Because LiteLLM's lexical word-boundary matcher does not reliably segment unspaced Thai text, the application first applies exact substring matches from `LLM_COMPLEXITY_KEYWORDS`; a match routes directly to the capable group, while every other request goes through LiteLLM's classifier. User-controlled escalation phrases are disabled, although any content-based classifier can still be influenced by crafted input; application budgets and rate limits remain necessary cost controls.
@@ -54,4 +70,6 @@ References:
 - [LiteLLM Router documentation](https://docs.litellm.ai/docs/routing)
 - [LiteLLM automatic complexity routing](https://docs.litellm.ai/docs/proxy/auto_routing)
 - [LiteLLM caching documentation](https://docs.litellm.ai/docs/proxy/caching)
+- [LiteLLM MiniMax provider](https://docs.litellm.ai/docs/providers/minimax)
 - [DeepSeek API documentation](https://api-docs.deepseek.com/)
+- [MiniMax OpenAI-compatible API](https://platform.minimax.io/docs/api-reference/text-openai-api)

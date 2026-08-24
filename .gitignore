@@ -30,3 +30,6 @@ Thumbs.db
 # Local data
 .cache/
 data/
+deploy/backend.env
+deploy/compose.env
+deploy/secrets/

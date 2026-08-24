@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,16 @@ from app.integrations.agent.gateway import LiteLLMGateway
 from app.integrations.agent.tools import CustomerToolFactory, ScopedTool
 
 logger = logging.getLogger(__name__)
+_HIDDEN_REASONING_BLOCK = re.compile(
+    r"<think(?:\s[^>]*)?>.*?(?:</think>|$)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def visible_model_text(value: Any) -> str:
+    """Remove provider reasoning blocks before returning or retaining a response."""
+    content = value if isinstance(value, str) else str(value)
+    return _HIDDEN_REASONING_BLOCK.sub("", content).strip()
 
 
 @dataclass(slots=True)
@@ -165,8 +176,7 @@ class CustomerAgentService:
                 output_tokens += used_output
                 messages.append(ai_message)
                 if not ai_message.tool_calls:
-                    content = ai_message.content
-                    final_text = content if isinstance(content, str) else str(content)
+                    final_text = visible_model_text(ai_message.content) or final_text
                     break
                 for call in ai_message.tool_calls:
                     tool = tool_by_name.get(call["name"])

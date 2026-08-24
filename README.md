@@ -28,6 +28,7 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 - Explicit CORS allowlist, request IDs, liveness, readiness, and non-root containers
 - Dual-read compatibility and an idempotent legacy-order migration command
 - GitHub Actions for lint, type-check, unit/integration tests, frontend build, and container smoke tests
+- GHCR backend images with immutable commit tags, multi-architecture manifests, provenance, and SBOM metadata
 
 ## Repository layout
 
@@ -248,8 +249,17 @@ The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC
 3. Use HTTPS URLs, set `APP_ENV=production` and `COOKIE_SECURE=true`, and configure an exact CORS allowlist.
 4. Register the exact LINE callback and webhook URLs under the production domain.
 5. Deploy MongoDB separately or use a managed provider with least-privilege network and database access.
-6. Build the images with `docker compose build` or the equivalent platform build, then gate traffic on `/api/v1/health/ready`.
-7. Provision the first admin explicitly in the database after that user has completed LINE Login; never accept a role from a browser, OAuth claim, or LLM argument.
+6. Let GitHub Actions publish the backend to GHCR only after every quality and container gate passes.
+7. Put the digest from the workflow summary in `deploy/compose.env`; production Compose pulls that exact backend image and connects it to Cloudflare Tunnel without exposing port `8000`.
+8. Deploy `apps/frontend` through Vercel with `NEXT_PUBLIC_API_URL` pointing at the stable API hostname.
+9. Gate traffic on `/api/v1/health/ready` and provision the first admin explicitly after that user completes LINE Login; never accept a role from a browser, OAuth claim, or LLM argument.
+
+Production deployment files:
+
+- [`compose.prod.yaml`](compose.prod.yaml) — backend plus Cloudflare Tunnel; no frontend, local MongoDB, or backend host port
+- [`deploy/backend.env.example`](deploy/backend.env.example) — placeholder-only backend runtime configuration
+- [`deploy/compose.env.example`](deploy/compose.env.example) — immutable image and local secret-file paths
+- [Operations Runbook](docs/operations-runbook.md#image-publication) — GHCR, VM, Vercel, rollout, and rollback procedure
 
 ## Demo placeholders
 
