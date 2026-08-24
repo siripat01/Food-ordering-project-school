@@ -20,6 +20,7 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 - Multi-item order schema with product/add-on snapshots and server-calculated totals
 - Atomic status changes, status history, order idempotency, and LINE webhook deduplication
 - Role-scoped AI tool factories; the customer toolset has no staff or admin operations
+- Deterministic confirmation for AI-triggered order creation/cancellation, minimized tool DTOs, and per-user LLM rate limits
 - Bounded, expiring in-memory LLM conversation context and async model calls
 - Feature flags for LINE, LLM, and the external recommender
 - In-process LiteLLM complexity/cost routing, independent fallbacks, and safe opt-in caching
@@ -94,6 +95,8 @@ The customer AI allowlist is exactly:
 
 Staff tools are constructed separately. No user search, role update, product mutation, deletion, or plaintext password tool is exposed to the customer agent.
 
+Prompt instructions are not an authorization boundary. Tool factories capture the authenticated user in server code, mutation tools require a short-lived pending action plus an exact follow-up confirmation, and tool results omit internal user IDs, status actors, and customer notes. Catalog and tool-output text is treated as untrusted data. See the [AI security model](docs/ai-security.md).
+
 ## Order lifecycle
 
 ```mermaid
@@ -159,6 +162,7 @@ docker compose up --build
 | `LLM_ROUTING_STRATEGY`, `LLM_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES` | No | Routing and reliability limits |
 | `LLM_MAX_TOOL_ITERATIONS`, `LLM_MAX_OUTPUT_TOKENS` | No | Agent budget limits |
 | `LLM_MEMORY_MESSAGES`, `LLM_MEMORY_TTL_MINUTES` | No | Per-user memory bounds and expiry |
+| `LLM_CONFIRMATION_TTL_MINUTES`, `LLM_REQUESTS_PER_MINUTE` | No | Pending mutation expiry and per-process authenticated-user request limit |
 | `LLM_CACHE_*` | No | Bounded local cache; customer-agent calls always use `no-store` |
 | `LLM_*_COST_PER_MILLION` | No | Explicit inputs for estimated cost metrics |
 | `RECOMMENDER_ENABLED`, `RECOMMENDER_URL`, `RECOMMENDER_TIMEOUT_SECONDS`, `RECOMMENDER_MODE` | No | Optional external provider and explicit `local`, `external_first`, or `external_fallback` policy |
@@ -181,6 +185,7 @@ See [the LLM gateway design](docs/llm-gateway.md) and [the observability runbook
 - [API guide](docs/api-guide.md)
 - [Operations runbook](docs/operations-runbook.md)
 - [LLM gateway](docs/llm-gateway.md)
+- [AI security model](docs/ai-security.md)
 - [Observability runbook](docs/observability.md)
 - [CPU recommendation-system plan](docs/recommendation-system-plan.md)
 - [Credential incident runbook](docs/security-incident-response.md)
@@ -240,7 +245,7 @@ cd apps/backend
   --write --rollback-version MODEL_VERSION
 ```
 
-The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC, cross-user order access, trusted price calculation, idempotent creation, invalid terminal transitions, OAuth state consumption, duplicate webhook delivery, customer-agent tool isolation, SSE fan-out, LINE status-notification boundaries, recommendation idempotency/privacy, offline metrics, log redaction, LiteLLM routing/cache policy, and a real MongoDB API flow. GitHub Actions supplies an isolated MongoDB service and also verifies missing/valid container startup behavior.
+The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC, cross-user order access, trusted price calculation, idempotent creation, invalid terminal transitions, OAuth state consumption, duplicate webhook delivery, customer-agent tool isolation, exact out-of-model mutation confirmation, indirect prompt injection, minimized agent DTOs, per-user LLM rate limiting, SSE fan-out, LINE status-notification boundaries, recommendation idempotency/privacy, offline metrics, log redaction, LiteLLM routing/cache policy, and a real MongoDB API flow. GitHub Actions supplies an isolated MongoDB service and also verifies missing/valid container startup behavior.
 
 ## Deployment
 
@@ -284,6 +289,7 @@ Production deployment files:
 - GitHub Actions passed backend, frontend, and container jobs for Phase 3 commit `e5bd195` on 2026-08-23; future changes must keep the same gates green.
 - OAuth/webhook behavior requires real LINE sandbox credentials for end-to-end verification.
 - In-memory agent context is per process and is intentionally lost on restart.
+- Pending AI confirmations and per-user LLM rate limits are process-local; production currently runs one backend replica. Multi-replica deployment requires a shared bounded store before scaling out.
 - LiteLLM response caching is local to one process and intentionally disabled for customer-agent calls.
 - SSE fan-out is process-local; a multi-replica deployment requires a shared event transport or single-replica queue affinity.
 - Personalized item-item serving defaults to a `0%` rollout until an operator reviews temporal Recall/NDCG, coverage, artifact bounds, and activation-gate output.

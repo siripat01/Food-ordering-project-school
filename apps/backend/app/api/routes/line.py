@@ -36,9 +36,21 @@ async def process_text_event(request: Request, event: Any, event_id: str) -> Non
             text=f"กรุณาเข้าสู่ระบบก่อนใช้งาน\n{login_url}",
         )
         return
-    await request.app.state.line_bot.reply_text(
-        reply_token=event.reply_token, text="กำลังประมวลผลคำขอครับ"
-    )
+    if getattr(event.source, "type", None) == "user":
+        try:
+            await request.app.state.line_bot.show_loading(
+                chat_id=line_user_id,
+                seconds=60,
+            )
+        except LineUpstreamError as exc:
+            logger.warning(
+                "line_loading_animation_failed",
+                extra={
+                    "error_type": type(exc).__name__,
+                    "line_operation": exc.operation,
+                    "upstream_status": exc.status_code,
+                },
+            )
     answer = await request.app.state.customer_agent.chat(
         identity=user,
         message=event.message.text,

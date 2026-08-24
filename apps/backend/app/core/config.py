@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     llm_max_output_tokens: int = Field(default=800, ge=100, le=4000)
     llm_memory_messages: int = Field(default=12, ge=2, le=30)
     llm_memory_ttl_minutes: int = Field(default=30, ge=5, le=1440)
+    llm_confirmation_ttl_minutes: int = Field(default=5, ge=1, le=30)
+    llm_requests_per_minute: int = Field(default=10, ge=1, le=120)
     llm_input_cost_per_million: float = Field(default=0, ge=0)
     llm_output_cost_per_million: float = Field(default=0, ge=0)
     llm_cache_enabled: bool = False

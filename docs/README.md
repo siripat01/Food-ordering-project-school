@@ -6,6 +6,7 @@ This directory contains the operational and engineering documentation for the Fo
 | --- | --- | --- |
 | [User and Role Guide](user-guide.md) | Customers, staff, admins, demo reviewers | Web and LINE flows, permissions, order lifecycle, and current UI limitations |
 | [Developer Guide](developer-guide.md) | Backend and frontend contributors | Architecture, local setup, quality checks, conventions, and safe change workflow |
+| [AI Security Model](ai-security.md) | Security reviewers and agent contributors | Prompt-injection threat model, deterministic controls, confirmations, and residual risk |
 | [API Guide](api-guide.md) | API consumers and testers | Endpoint and role matrix, authentication, idempotency, examples, and error behavior |
 | [Operations Runbook](operations-runbook.md) | Deployers and operators | Configuration, deployment, health checks, migration, rollback, and troubleshooting |
 | [LLM Gateway](llm-gateway.md) | AI/backend engineers | LiteLLM complexity routing, DeepSeek configuration, fallback, and cache safety |

@@ -10,6 +10,7 @@ from linebot.v3.messaging import (
     Configuration,
     PushMessageRequest,
     ReplyMessageRequest,
+    ShowLoadingAnimationRequest,
     TextMessage,
 )
 from linebot.v3.messaging.exceptions import ApiException
@@ -132,6 +133,23 @@ class LineBotClient:
             raise LineUpstreamError(
                 "LINE reply delivery failed",
                 operation="reply",
+                status_code=exc.status if isinstance(exc.status, int) else None,
+            ) from None
+
+    async def show_loading(self, *, chat_id: str, seconds: int = 60) -> None:
+        if self.messaging is None:
+            raise RuntimeError("LINE integration is disabled")
+        try:
+            await self.messaging.show_loading_animation(
+                ShowLoadingAnimationRequest(
+                    chatId=chat_id,
+                    loadingSeconds=max(5, min(seconds, 60)),
+                )
+            )
+        except ApiException as exc:
+            raise LineUpstreamError(
+                "LINE loading animation failed",
+                operation="loading",
                 status_code=exc.status if isinstance(exc.status, int) else None,
             ) from None
 

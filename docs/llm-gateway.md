@@ -63,6 +63,8 @@ Customer-agent calls always send `no-store`, even when the gateway cache is enab
 
 LiteLLM chooses a model deployment, not an application identity or permission. The gateway cannot override the authenticated user, role, tool allowlist, product catalog, authoritative price, idempotency key, or order transition rules. Those remain deterministic backend responsibilities.
 
+Prompt-injection resistance follows the same boundary. Direct user instructions and indirect catalog/tool-output text are untrusted. Customer mutation tool calls create a short-lived pending action instead of executing. Only a subsequent exact confirmation parsed by application code executes the stored validated arguments; the model cannot mark its own call as confirmed. Tool DTOs omit internal identities, status-history actors, and notes. See [AI Security Model](ai-security.md).
+
 Verbose LiteLLM payload logging is disabled. Do not enable debug prompt logging in production.
 
 References:

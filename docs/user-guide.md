@@ -98,6 +98,10 @@ When both LINE and LLM integrations are enabled:
 
 The customer assistant cannot invoke staff or admin operations. It cannot choose a user ID, role, or authoritative price. Duplicate LINE webhook deliveries are ignored, and order creation uses the webhook event as part of its idempotency context.
 
+Creating or cancelling an order is a two-step action. The assistant first prepares a short-lived pending action without changing data. The customer must then send exactly **ยืนยัน**, **ยืนยันรายการ**, or **confirm** in a follow-up message. Any longer message containing those words is not accepted as confirmation. Send **ยกเลิก**, **ยกเลิกรายการ**, or **cancel** to discard the pending action. Pending actions expire automatically.
+
+For authenticated one-to-one chats, LINE displays a bounded loading animation while the assistant prepares a response. Loading-indicator delivery is best-effort and never blocks the actual agent response.
+
 When LINE is enabled and the account has a LINE identity, the system pushes a concise notification after the order is confirmed, preparing, ready, completed, or cancelled. Notification delivery happens after the database transition, so an upstream LINE failure does not undo the order status.
 
 ## Common problems
