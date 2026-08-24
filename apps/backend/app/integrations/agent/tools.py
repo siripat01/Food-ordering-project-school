@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.domain.common import parse_object_id
-from app.domain.orders import OrderCreate, OrderResponse, OrderStatus, OrderStatusUpdate
+from app.domain.orders import (
+    OrderCreate,
+    OrderItemRequest,
+    OrderResponse,
+    OrderStatus,
+    OrderStatusUpdate,
+)
 from app.domain.products import ProductResponse
 from app.domain.users import CurrentUser
 from app.services.orders import OrderService
@@ -119,9 +125,9 @@ class CustomerToolFactory:
                 [_product_data(product) for product in products.products],
             )
 
-        async def create_own_order(items: list[dict[str, Any]]) -> str:
-            """Create an own order after deterministic customer confirmation."""
-            payload = OrderCreate.model_validate({"items": items})
+        async def create_own_order(items: list[OrderItemRequest]) -> str:
+            """Create an own order from product_id, quantity, addon_ids, and optional note."""
+            payload = OrderCreate(items=items)
             order, _created = await self.orders.create(
                 user_id=identity.id,
                 payload=payload,
@@ -129,10 +135,9 @@ class CustomerToolFactory:
             )
             return _agent_payload("order", _order_data(order))
 
-        async def view_own_orders(status: str | None = None) -> str:
-            """View orders owned by the authenticated customer."""
-            parsed_status = OrderStatus(status) if status else None
-            orders = await self.orders.list_own(user_id=identity.id, status=parsed_status)
+        async def view_own_orders(status: OrderStatus | None = None) -> str:
+            """View own orders, optionally filtered by a supported order status."""
+            orders = await self.orders.list_own(user_id=identity.id, status=status)
             return _agent_payload(
                 "orders",
                 [_order_data(order) for order in orders.orders],
@@ -146,6 +151,15 @@ class CustomerToolFactory:
         def validate_create(arguments: dict[str, Any]) -> dict[str, Any]:
             payload = OrderCreate.model_validate({"items": arguments.get("items")})
             return {"items": [item.model_dump() for item in payload.items]}
+
+        def validate_view(arguments: dict[str, Any]) -> dict[str, Any]:
+            raw_status = arguments.get("status")
+            if raw_status is None:
+                return {"status": None}
+            status_text = str(raw_status).strip().lower()
+            if not status_text or status_text == "all":
+                return {"status": None}
+            return {"status": OrderStatus(status_text).value}
 
         def validate_cancel(arguments: dict[str, Any]) -> dict[str, Any]:
             order_id = str(arguments.get("order_id") or "")
@@ -161,7 +175,12 @@ class CustomerToolFactory:
                 requires_confirmation=True,
                 argument_validator=validate_create,
             ),
-            ScopedTool("view_own_orders", view_own_orders.__doc__ or "", view_own_orders),
+            ScopedTool(
+                "view_own_orders",
+                view_own_orders.__doc__ or "",
+                view_own_orders,
+                argument_validator=validate_view,
+            ),
             ScopedTool(
                 "cancel_eligible_own_order",
                 cancel_eligible_own_order.__doc__ or "",
