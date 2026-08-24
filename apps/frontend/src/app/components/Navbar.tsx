@@ -35,9 +35,10 @@ export default function Navbar() {
     ["ติดต่อ", "/contact"],
   ];
   if (role === "staff" || role === "admin") pages.push(["คิวร้าน", "/admin"]);
+  if (role === "admin") pages.push(["จัดการเมนู", "/admin/products"]);
 
   const isActive = (path: string) =>
-    path === "/" ? pathname === path : pathname.startsWith(path);
+    path === "/" || path === "/admin" ? pathname === path : pathname.startsWith(path);
 
   const navigation = (
     <>

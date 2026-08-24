@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -8,8 +9,10 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 from app.core.security import TokenType, create_token
+from app.integrations.line import LineUpstreamError
 
 router = APIRouter(prefix="/line", tags=["line"])
+logger = logging.getLogger(__name__)
 
 
 async def process_text_event(request: Request, event: Any, event_id: str) -> None:
@@ -44,6 +47,26 @@ async def process_text_event(request: Request, event: Any, event_id: str) -> Non
     await request.app.state.line_bot.push_text(line_user_id=line_user_id, text=answer)
 
 
+async def process_text_event_safely(request: Request, event: Any, event_id: str) -> None:
+    """Keep post-response LINE failures bounded and free of upstream response bodies."""
+    try:
+        await process_text_event(request, event, event_id)
+    except LineUpstreamError as exc:
+        logger.error(
+            "line_message_delivery_failed",
+            extra={
+                "error_type": type(exc).__name__,
+                "line_operation": exc.operation,
+                "upstream_status": exc.status_code,
+            },
+        )
+    except Exception as exc:
+        logger.error(
+            "line_text_event_processing_failed",
+            extra={"error_type": type(exc).__name__},
+        )
+
+
 @router.post("/webhook")
 async def line_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
     if not request.app.state.settings.line_enabled:
@@ -67,5 +90,5 @@ async def line_webhook(request: Request, background_tasks: BackgroundTasks) -> d
         event_id = getattr(event, "webhook_event_id", None)
         if not event_id or not await request.app.state.webhooks.claim(event_id):
             continue
-        background_tasks.add_task(process_text_event, request, event, event_id)
+        background_tasks.add_task(process_text_event_safely, request, event, event_id)
     return {"status": "accepted"}

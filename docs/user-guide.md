@@ -73,13 +73,18 @@ An authenticated customer can call `DELETE /api/v1/recommendations/data` to remo
 
 ## Admin flow
 
-Admins can use the same web queue as staff. The current web application does not yet contain product-management or user-management screens. Those admin capabilities are available through the protected API:
+Admins can use the same web queue as staff. Admin accounts also see **Manage menu** in the navigation bar and can open `/admin/products` to:
+
+- Search and filter the full catalog, including unavailable and discontinued products.
+- Create products with a server-validated price, description, image URL, and add-ons.
+- Update product details, availability, and add-ons.
+- Discontinue a product without deleting historical order snapshots.
+
+The product-management screen is guarded in the browser for usability and again by deterministic backend RBAC. The current web application does not yet contain a user-management screen. User administration remains available through the protected API:
 
 - List all users.
 - Change another user's role.
 - Activate or deactivate another user.
-- List all products, including unavailable and discontinued products.
-- Create, update, or discontinue a product.
 
 An admin cannot remove their own admin role or deactivate their own account. See the [API Guide](api-guide.md) for endpoint details.
 
@@ -104,6 +109,8 @@ When LINE is enabled and the account has a LINE identity, the system pushes a co
 | A product cannot be ordered | It may be unavailable, discontinued, or changed since the page loaded. Refresh the product list. |
 | Cancellation returns an error | Refresh the order list. Staff may already have moved it beyond an eligible state. |
 | The shop queue is denied | The account must have the `staff` or `admin` role and remain active. |
+| Menu management is denied | The account must have the `admin` role and remain active. Refresh after a role change. |
+| A LINE message reaches the webhook but no reply arrives | Recreate the backend after updating its environment, then verify that the Messaging API channel access token can call `GET /v2/bot/info`. Do not use a channel ID or LINE Login credential as the Messaging API token. |
 | A retry shows the existing order | This is expected idempotency behavior, not a duplicate failure. |
 
 When reporting a failed request, include the `X-Request-ID` response header. Do not send access tokens, cookies, API keys, full LINE payloads, or customer notes in bug reports.

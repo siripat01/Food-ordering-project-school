@@ -47,10 +47,12 @@ class JsonLogFormatter(logging.Formatter):
         "http_route": "httpRoute",
         "http_status": "httpStatus",
         "input_tokens": "inputTokens",
+        "line_operation": "lineOperation",
         "model": "model",
         "order_id": "orderId",
         "order_status": "orderStatus",
         "output_tokens": "outputTokens",
+        "upstream_status": "upstreamStatus",
     }
 
     def format(self, record: logging.LogRecord) -> str:

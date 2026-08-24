@@ -81,6 +81,7 @@ Remote verification: GitHub Actions run `32586236010` passed backend, frontend, 
 ### Phase 3: Portfolio features — implemented and locally verified
 
 - The authenticated staff queue uses SSE snapshots, committed order updates, bounded subscriber queues, heartbeats, reconnect UX, and REST fallback.
+- Admins have a responsive product-management screen at `/admin/products`; user-role management remains API-only.
 - LINE notifications are dispatched after committed operational status changes without making LINE availability part of the database transaction.
 - Recommendation slates are authenticated, expiring, and product-bound. Client engagement uses server dedupe keys, daily caps, viewport-qualified impressions, and a dedicated versioned HMAC pseudonym key independent of JWT signing.
 - Completed orders are the authoritative purchase source. Customers can idempotently purge their raw recommendation slates/events/counters/cache, including still-live previous key versions.

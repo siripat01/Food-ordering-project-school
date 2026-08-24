@@ -16,7 +16,7 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 - Staff order queue and validated operational status transitions
 - Authenticated SSE updates for the live staff queue with bounded per-client buffers
 - LINE push notifications for confirmed, preparing, ready, completed, and cancelled orders
-- Admin product and user-role management
+- Admin product management UI plus protected user-role management APIs
 - Multi-item order schema with product/add-on snapshots and server-calculated totals
 - Atomic status changes, status history, order idempotency, and LINE webhook deduplication
 - Role-scoped AI tool factories; the customer toolset has no staff or admin operations
@@ -267,6 +267,7 @@ Production deployment files:
 - `[Screenshot: secure LINE Login flow]`
 - `[Screenshot: multi-item order confirmation]`
 - `[Screenshot: staff order queue]`
+- `[Screenshot: admin product management]`
 - `[Video: LINE assistant creates and tracks an own order]`
 
 ## Engineering trade-offs

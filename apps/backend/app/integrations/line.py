@@ -12,13 +12,23 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage,
 )
+from linebot.v3.messaging.exceptions import ApiException
 from linebot.v3.webhook import WebhookParser
 
 from app.core.config import Settings
 
 
 class LineUpstreamError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.status_code = status_code
 
 
 class LineOAuthClient:
@@ -111,19 +121,33 @@ class LineBotClient:
     async def reply_text(self, *, reply_token: str, text: str) -> None:
         if self.messaging is None:
             raise RuntimeError("LINE integration is disabled")
-        await self.messaging.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=[TextMessage(text=text[:5000])],
+        try:
+            await self.messaging.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=text[:5000])],
+                )
             )
-        )
+        except ApiException as exc:
+            raise LineUpstreamError(
+                "LINE reply delivery failed",
+                operation="reply",
+                status_code=exc.status if isinstance(exc.status, int) else None,
+            ) from None
 
     async def push_text(self, *, line_user_id: str, text: str) -> None:
         if self.messaging is None:
             raise RuntimeError("LINE integration is disabled")
-        await self.messaging.push_message(
-            PushMessageRequest(
-                to=line_user_id,
-                messages=[TextMessage(text=text[:5000])],
+        try:
+            await self.messaging.push_message(
+                PushMessageRequest(
+                    to=line_user_id,
+                    messages=[TextMessage(text=text[:5000])],
+                )
             )
-        )
+        except ApiException as exc:
+            raise LineUpstreamError(
+                "LINE push delivery failed",
+                operation="push",
+                status_code=exc.status if isinstance(exc.status, int) else None,
+            ) from None
