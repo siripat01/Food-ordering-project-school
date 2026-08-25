@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -13,7 +12,6 @@ from bson.decimal128 import Decimal128
 from fastapi import FastAPI
 
 from app.core.config import Settings
-from app.core.security import TokenType, create_token
 from app.domain.common import utc_now
 from app.main import create_app
 
@@ -98,18 +96,8 @@ async def test_real_mongodb_order_flow_is_isolated_and_idempotent(
             "createdAt": now,
         }
     )
-    customer_token = create_token(
-        subject=str(customer_id),
-        token_type=TokenType.ACCESS,
-        settings=settings,
-        lifetime=timedelta(minutes=5),
-    )
-    other_token = create_token(
-        subject=str(other_customer_id),
-        token_type=TokenType.ACCESS,
-        settings=settings,
-        lifetime=timedelta(minutes=5),
-    )
+    customer_token, _ = await app.state.auth_sessions.issue(str(customer_id))
+    other_token, _ = await app.state.auth_sessions.issue(str(other_customer_id))
     payload = {
         "items": [
             {
