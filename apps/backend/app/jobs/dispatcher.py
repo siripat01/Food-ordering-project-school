@@ -11,7 +11,11 @@ from app.core.observability import configure_logging, set_request_id
 from app.db.mongodb import MongoDatabase
 from app.domain.jobs import TaskName
 from app.domain.outbox import OutboxEvent, OutboxEventType
-from app.services.outbox import OutboxRepository, OutboxService
+from app.services.outbox import (
+    OutboxLeaseLostError,
+    OutboxRepository,
+    OutboxService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +24,6 @@ IDLE_POLL_INTERVAL_SECONDS = 3.0
 CLAIM_BATCH_SIZE = 20
 
 DispatchHandler = Callable[[OutboxEvent], Awaitable[None]]
-
-
-class UnknownEventTypeError(RuntimeError):
-    """Raised when an outbox event has no route to a background command."""
 
 
 async def _dispatch_order_created(event: OutboxEvent) -> None:
@@ -44,14 +44,11 @@ async def _dispatch_order_status_changed(event: OutboxEvent) -> None:
     )
 
 
-#: Explicit fact -> command routing table. Adding an event type means adding one
-#: entry here; the dispatcher itself never grows a branch.
 EVENT_HANDLERS: dict[str, DispatchHandler] = {
     OutboxEventType.ORDER_CREATED.value: _dispatch_order_created,
     OutboxEventType.ORDER_STATUS_CHANGED.value: _dispatch_order_status_changed,
 }
 
-#: Documentation of the routing table, used in logs and docs.
 EVENT_TASK_NAMES: dict[str, TaskName] = {
     OutboxEventType.ORDER_CREATED.value: TaskName.ORDER_PROCESS,
     OutboxEventType.ORDER_STATUS_CHANGED.value: TaskName.ORDER_UPDATE_STATUS,
@@ -59,13 +56,7 @@ EVENT_TASK_NAMES: dict[str, TaskName] = {
 
 
 class OutboxDispatcher:
-    """Turns committed facts into background commands.
-
-    This is infrastructure, not business logic: it claims an event, enqueues the
-    task it maps to, and records the outcome. Delivery is at-least-once by
-    design — an enqueue that succeeds just before a crash is replayed after the
-    claim's visibility timeout expires, so task handlers must tolerate repeats.
-    """
+    """Turn committed facts into Taskiq commands."""
 
     def __init__(
         self,
@@ -79,22 +70,24 @@ class OutboxDispatcher:
         self.batch_size = batch_size
 
     async def dispatch(self, event: OutboxEvent) -> None:
-        """Enqueue one event's task, then mark it sent.
+        """Enqueue one event's task, then transition the owned lease."""
 
-        The order matters: an event is only marked ``sent`` after the enqueue
-        returns, so a broker outage always leaves the event retryable.
-        """
         set_request_id(event.correlation_id or event.id)
         handler = self.handlers.get(event.event_type)
         if handler is None:
             await self.outbox.mark_as_dead(
-                event, error=f"No task route for event type {event.event_type}"
+                event,
+                error=f"No task route for event type {event.event_type}",
             )
             return
+
         try:
             await handler(event)
         except Exception as exc:
-            await self.outbox.mark_as_failed(event, error=f"{type(exc).__name__}: {exc}")
+            await self.outbox.mark_as_failed(
+                event,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             logger.warning(
                 "outbox_dispatch_failed",
                 extra={
@@ -106,6 +99,7 @@ class OutboxDispatcher:
                 },
             )
             return
+
         await self.outbox.mark_as_sent(event)
         logger.info(
             "outbox_event_dispatched",
@@ -119,13 +113,24 @@ class OutboxDispatcher:
         )
 
     async def run_once(self) -> int:
-        """Claim and dispatch one batch. Returns the number of events handled."""
+        """Claim and dispatch one batch. Return the number selected for dispatch."""
+
         events = await self.outbox.claim_pending_events(limit=self.batch_size)
         for event in events:
             try:
                 await self.dispatch(event)
+            except OutboxLeaseLostError:
+                # Another dispatcher reclaimed this event after the visibility
+                # deadline. The stale owner must never overwrite the new owner.
+                logger.warning(
+                    "outbox_lease_lost",
+                    extra={
+                        "attempt": event.attempts,
+                        "event_id": event.id,
+                        "event_type": event.event_type,
+                    },
+                )
             except Exception:
-                # One poisonous event must never end the polling loop.
                 logger.exception(
                     "outbox_dispatch_crashed",
                     extra={"event_id": event.id, "event_type": event.event_type},
@@ -134,7 +139,7 @@ class OutboxDispatcher:
 
 
 class OutboxPollingDispatcher:
-    """Polls MongoDB for due outbox events until stopped."""
+    """Poll MongoDB for due outbox events until stopped."""
 
     def __init__(
         self,
@@ -157,7 +162,6 @@ class OutboxPollingDispatcher:
             try:
                 handled = await self.dispatcher.run_once()
             except Exception:
-                # Mongo hiccups must not kill the process; the events stay claimable.
                 logger.exception("outbox_poll_failed")
                 handled = 0
             delay = self.poll_interval_seconds if handled else self.idle_interval_seconds
@@ -168,23 +172,30 @@ class OutboxPollingDispatcher:
 
 async def main(settings: Settings | None = None) -> None:
     """Entrypoint for ``python -m app.jobs.dispatcher``."""
+
     resolved = settings or get_settings()
     configure_logging(level=resolved.log_level, json_logs=resolved.log_json)
 
     from app.core.taskiq import broker
 
     db = MongoDatabase(resolved)
-    await db.connect()
-    await broker.startup()
-    polling = OutboxPollingDispatcher(OutboxDispatcher(OutboxService(OutboxRepository(db))))
-    loop = asyncio.get_running_loop()
-    for received in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(NotImplementedError):
-            loop.add_signal_handler(received, polling.stop)
+    broker_started = False
     try:
+        await db.connect()
+        await broker.startup()
+        broker_started = True
+
+        polling = OutboxPollingDispatcher(
+            OutboxDispatcher(OutboxService(OutboxRepository(db)))
+        )
+        loop = asyncio.get_running_loop()
+        for received in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(received, polling.stop)
         await polling.run()
     finally:
-        await broker.shutdown()
+        if broker_started:
+            await broker.shutdown()
         await db.close()
 
 
