@@ -27,9 +27,8 @@ TASK_MODULES = (
 
 _settings = get_settings()
 
-# Taskiq owns its own Redis connections. The application Redis client
-# (app.db.redis.RedisDatabase) stays separate because it serves business
-# caching and auth session state, not broker internals.
+# Taskiq owns its broker connections. The application's Redis client remains
+# separate because it serves auth, agent memory, caching, and other business state.
 result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=_settings.redis_url,
     result_ex_time=RESULT_TTL_SECONDS,
@@ -44,32 +43,30 @@ broker = (
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def on_worker_startup(state: TaskiqState) -> None:
-    """Build the worker's service container once per worker process.
+    """Build the worker dependency graph once per worker process."""
 
-    The worker is a separate process from the API, so it has to install the
-    project's structured logging itself.
-    """
-    from app.core.container import ServiceContainer
+    from app.bootstrap import build_worker_services
     from app.core.observability import configure_logging
 
     settings = get_settings()
     configure_logging(level=settings.log_level, json_logs=settings.log_json)
-    container = ServiceContainer(settings)
-    await container.start()
-    state.container = container
+    state.services = await build_worker_services(settings)
     logger.info("taskiq_worker_started", extra={"queue_name": QUEUE_NAME})
 
 
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def on_worker_shutdown(state: TaskiqState) -> None:
-    container = getattr(state, "container", None)
-    if container is not None:
-        await container.close()
+    from app.bootstrap import close_worker_services
+
+    services = getattr(state, "services", None)
+    if services is not None:
+        await close_worker_services(services)
     logger.info("taskiq_worker_stopped", extra={"queue_name": QUEUE_NAME})
 
 
 def import_task_modules() -> None:
     """Import every task module so its handlers register on the broker."""
+
     for module in TASK_MODULES:
         import_module(module)
 
