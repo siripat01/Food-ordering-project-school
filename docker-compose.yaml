@@ -52,14 +52,20 @@ services:
     command: ["taskiq", "worker", "app.core.taskiq:broker"]
     env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
     restart: unless-stopped
-    # Not published: the worker consumes from Redis and has no inbound surface.
-    # Override the API image healthcheck with process liveness for this runtime.
+    # Not published: the worker consumes from Redis and has no inbound surface,
+    # so readiness means "can reach the queue", not "serves HTTP".
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
-      interval: 10s
-      timeout: 3s
-      start_period: 10s
-      retries: 3
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import redis; from app.core.config import get_settings;
+          redis.Redis.from_url(get_settings().redis_url).ping()
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       mongo:
         condition: service_healthy
@@ -72,13 +78,20 @@ services:
     command: ["python", "-m", "app.jobs.dispatcher"]
     env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
     restart: unless-stopped
-    # Override the API image healthcheck with process liveness for this runtime.
+    # The dispatcher polls MongoDB, so that is what readiness checks.
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
-      interval: 10s
-      timeout: 3s
-      start_period: 10s
-      retries: 3
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import pymongo; from app.core.config import get_settings;
+          pymongo.MongoClient(get_settings().mongodb_uri.get_secret_value(),
+          serverSelectionTimeoutMS=3000).admin.command("ping")
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       mongo:
         condition: service_healthy
