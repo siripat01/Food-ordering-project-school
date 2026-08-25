@@ -1,158 +1,186 @@
 # Background Jobs and Transactional Outbox
 
-This document describes how committed business state becomes background work.
-It covers the transactional outbox, the outbox dispatcher, the Taskiq worker,
-and the reliability properties the design does and does not provide.
+This document describes how committed business state becomes background work in
+the backend. The design uses MongoDB for business state and the outbox, Taskiq on
+Redis Streams for commands, and separate API, worker, and dispatcher processes.
 
 ## Vocabulary
 
-The two concepts are deliberately never mixed:
+Keep facts and commands separate:
 
 | Concept | Meaning | Examples | Storage |
 | --- | --- | --- | --- |
-| **Outbox event** | A fact. Something that already happened and is committed. | `order.created`, `order.status_changed` | MongoDB `outbox_events` |
-| **Task / job** | A command. Something that should be done. | `order.process`, `line.push`, `agent.process` | Redis Streams (Taskiq) |
+| Outbox event | A fact that already happened and committed | `order.created`, `order.status_changed` | MongoDB `outbox_events` |
+| Task / job | A command that should be executed | `order.process`, `line.push`, `agent.process` | Redis Streams via Taskiq |
 
-Facts are declared in `app/domain/outbox.py`. Commands are declared in
-`app/domain/jobs.py`. The dispatcher is the only component that turns one into
-the other.
+Facts live in `app/domain/outbox.py`. Stable task names live in
+`app/domain/jobs.py`. The dispatcher is the boundary that maps facts to commands.
 
 ## Runtime components
 
 ```text
-┌──────────────┐   MongoDB transaction   ┌──────────────┐
-│   FastAPI    │────────────────────────▶│ orders +     │
-│ (API process)│                         │ outbox_events│
-└──────┬───────┘                         └──────┬───────┘
-       │ agent.process.kiq()                    │
-       ▼                                        ▼
-  Redis Streams  ◀───────────────────  Outbox Dispatcher
-       │                                (own process)
-       ▼
-┌──────────────┐
-│ Taskiq Worker│──▶ Order / LINE / Agent services ──▶ MongoDB, LINE API
-└──────────────┘
+FastAPI
+   │
+   ├── direct async command ───────────────▶ Redis Streams ──▶ Taskiq worker
+   │
+   └── MongoDB transaction
+          ├── business state
+          └── outbox fact
+                 │
+                 ▼
+          Outbox dispatcher
+                 │
+                 └─────────────────────────▶ Redis Streams ──▶ Taskiq worker
 ```
 
-Three processes run independently:
+The processes run independently:
 
-| Process | Command | Role |
+| Process | Command | Responsibility |
 | --- | --- | --- |
-| API | `uvicorn app.main:app` | Serves HTTP. Enqueues tasks; never consumes them. |
-| Worker | `taskiq worker app.core.taskiq:broker` | Consumes Redis Streams and runs task handlers. |
-| Dispatcher | `python -m app.jobs.dispatcher` | Polls the outbox and enqueues the mapped task. |
+| API | `uvicorn app.main:app` | HTTP, validation, synchronous application flows, enqueue commands |
+| Worker | `taskiq worker app.core.taskiq:broker` | Consume Redis Streams and execute thin task handlers |
+| Dispatcher | `python -m app.jobs.dispatcher` | Poll MongoDB outbox and enqueue mapped commands |
 
-The dispatcher is a dedicated process on purpose. Running it inside the API
-would start one polling loop per Uvicorn worker, and reliable dispatch would
-then depend on an individual web process staying alive.
+The dispatcher is not started from FastAPI, so multiple Uvicorn workers do not
+accidentally create multiple polling loops.
 
-### Broker configuration
+## Composition root
 
-`app/core/taskiq.py` builds the broker at import time from `REDIS_URL` in the
-process environment. It is a module-level singleton because
-`taskiq worker app.core.taskiq:broker` resolves the broker by import path, so
-the worker, the dispatcher, and the API all reach the same queue. A per-request
-`Settings` object cannot redirect it; change `REDIS_URL` instead.
+Dependency construction belongs in `app/bootstrap.py`.
 
-Taskiq manages its own broker connections. The application's Redis client
-(`app/db/redis.py`) stays separate because it serves auth sessions, agent
-memory, and caching — not broker internals.
+`ApiServices` and `WorkerServices` are data-only records. They do not contain
+business methods, lifecycle methods, or service-locator behavior. The
+composition-root functions build the dependency graph needed by each runtime:
+
+```text
+build_api_services()
+  └── only API dependencies
+
+build_worker_services()
+  └── only Taskiq worker dependencies
+
+dispatcher
+  └── MongoDatabase + OutboxService only
+```
+
+This keeps runtime wiring in one explicit place without a giant mutable
+`ServiceContainer`. Startup cleanup is exception-safe: resources already opened
+during a partial startup are closed before the original error is re-raised.
+
+FastAPI exposes the concrete dependencies routes already use on `app.state`; it
+does not also expose a second container path. Taskiq stores one `WorkerServices`
+instance on worker state and task handlers retrieve it through
+`services_from(context)`.
 
 ## Layering
 
 ```text
-API route ──▶ Service ──▶ Repository / MongoDB
+API route ──▶ Service ──▶ Repository / external adapter
 Task handler ──▶ Service ──▶ Repository / external adapter
-Service transaction ──▶ business state + outbox ──▶ Dispatcher ──▶ Taskiq
+Service transaction ──▶ business state + outbox
+Outbox dispatcher ──▶ Taskiq command
 ```
 
-- Task handlers in `app/jobs/` are thin: they bind the correlation id, resolve
-  the worker's service container, and delegate.
-- `OutboxRepository` knows nothing about Taskiq.
-- `OrderWorkflowService` and `LineChatService` receive an *injected* enqueue
-  callable, so no domain service imports the Redis broker.
+Rules:
 
-## Supported facts and their routes
+- Task handlers stay thin.
+- Services own application/business decisions.
+- Repositories do not import Taskiq.
+- Outbox events are facts, never commands.
+- The dispatcher contains routing and delivery infrastructure, not business logic.
+- Services that need to enqueue LINE work receive an injected enqueue callable.
 
-| Outbox event | Produced by | Routed to task | Effect |
-| --- | --- | --- | --- |
-| `order.created` | `OrderService.create` | `order.process` | LINE acknowledgement to the customer |
-| `order.status_changed` | `OrderService.transition`, `OrderService.cancel_own` | `order.update_status` | LINE status notification |
+## Supported facts and jobs
 
-The routing table is `EVENT_HANDLERS` in `app/jobs/dispatcher.py`. Adding a fact
-means adding one registry entry, never a new branch in the dispatcher.
-
-## Supported jobs
-
-| Task name | Handler | Delegates to |
+| Outbox event | Routed task | Effect |
 | --- | --- | --- |
-| `order.process` | `app/jobs/order.py::process_order` | `OrderWorkflowService.process_created` |
-| `order.update_status` | `app/jobs/order.py::update_order_status` | `OrderWorkflowService.process_status_change` |
-| `order.cancel` | `app/jobs/order.py::cancel_order` | `OrderService.cancel_own` |
-| `line.push` | `app/jobs/line.py::push_line` | `LineBotClient.push_messages` |
-| `line.reply` | `app/jobs/line.py::reply_line` | `LineBotClient.reply_messages` |
-| `agent.process` | `app/jobs/agent.py::process_agent_message` | `LineChatService.handle_text_message` |
+| `order.created` | `order.process` | Post-commit order processing / LINE acknowledgement |
+| `order.status_changed` | `order.update_status` | Post-commit status notification |
 
-`order.cancel` is the asynchronous cancellation *command*. It is not produced by
-any outbox event, because cancellation is already performed synchronously by the
-API and the agent tool; both then emit `order.status_changed`.
+Current Taskiq commands:
 
-## MongoDB transaction requirement
+- `order.process`
+- `order.update_status`
+- `order.cancel`
+- `line.push`
+- `line.reply`
+- `agent.process`
 
-The outbox event is written with the same session as the business write:
+`order.cancel` is a command, not an outbox fact. A successful cancellation
+changes business state and emits `order.status_changed`.
+
+## Transactional outbox
+
+Business state and its fact are written with the same MongoDB session:
 
 ```python
 async with self.db.transaction() as session:
-    await self.db.orders.insert_one(doc, session=session)
+    await self.db.orders.insert_one(order, session=session)
     await self.outbox.save_event(..., session=session)
 ```
 
-So the outcome is always `order + outbox` or `neither` — never a dual write.
+Therefore a supported MongoDB deployment commits both writes or neither write.
 
-**Multi-document transactions require a replica set or a sharded cluster.** A
-standalone `mongod` cannot provide them. `MongoDatabase._detect_transaction_support`
-probes `hello` at startup and sets `transactions_supported`.
+MongoDB multi-document transactions require a replica set or sharded cluster.
+The local compose stack runs a single-node replica set. A standalone `mongod`
+uses the documented non-atomic fallback and must not be treated as a production
+transactional outbox.
 
-- **Supported** (MongoDB Atlas, or the local single-node replica set in
-  `docker-compose.yaml`): the writes are atomic.
-- **Not supported** (a plain standalone `mongod`): `transaction()` yields
-  `None`, both documents are still written, a `mongodb_transactions_unavailable`
-  warning is logged at startup, and atomicity is lost. This fallback keeps the
-  application running for local experiments; it is **not** a transactional
-  outbox and must not be used in production.
+## Claiming, leases, and fencing
 
-The local compose file therefore runs `mongod --replSet rs0` and initiates the
-set from the healthcheck. `MONGODB_URI` must include the replica set, for
-example `mongodb://mongo:27017/?replicaSet=rs0`.
-
-## Claiming and concurrency
-
-`OutboxRepository.claim_one` claims with a single atomic `find_one_and_update`:
+A due event is claimed with one atomic `find_one_and_update`:
 
 ```text
-{status ∈ {pending, processing, failed}, availableAt ≤ now}
-  → {status: processing, availableAt: now + 60s}, attempts += 1
+status ∈ {pending, failed, processing}
+availableAt <= now
+
+        │ atomic claim
+        ▼
+
+status      = processing
+claimId     = random fencing token
+claimedAt   = now
+availableAt = now + visibility timeout
+attempts   += 1
 ```
 
-Because matching and mutating happen in one step, two dispatcher instances can
-never claim the same event. `availableAt` doubles as a visibility deadline, so an
-event left in `processing` by a crashed dispatcher becomes claimable again after
-60 seconds. Terminal statuses (`sent`, `dead`) are never claimed.
+`availableAt` is the visibility deadline. If a dispatcher dies, another
+dispatcher may reclaim the event after the deadline.
 
-## Status flow and retries
+`claimId` is equally important. Every `sent`, `failed`, or `dead` transition is
+conditional on:
 
 ```text
-pending ──▶ processing ──┬──▶ sent
-                         └──▶ failed ──▶ (backoff elapses) ──▶ processing
-                                     └──▶ dead   (attempts ≥ maxAttempts)
+_id == event.id
+status == processing
+claimId == caller.claim_id
 ```
 
-`attempts` is incremented at claim time, not at failure time, so an event whose
-dispatcher crashed mid-flight still counts its attempt and cannot loop forever.
+This prevents a stale dispatcher from waking after its lease expired and
+overwriting the state written by a newer dispatcher. Successful transitions
+remove `claimId` and `claimedAt`.
 
-Backoff is staged, defined by `RETRY_BACKOFF_SECONDS` in `app/domain/outbox.py`:
+A dispatcher crash consumes an attempt because attempts increment at claim
+time. If repeated crashes exhaust the attempt budget without reporting a normal
+failure, the next reclaim parks the event as `dead` rather than dispatching it
+forever.
 
-| Attempt | Next retry after |
+## Status flow and retry
+
+```text
+pending
+   │
+   ▼
+processing ───────────────▶ sent
+   │
+   ├── failure ───────────▶ failed ──(backoff)──▶ processing
+   │
+   └── exhausted ─────────▶ dead
+```
+
+Outbox retry backoff is staged:
+
+| Attempt | Next retry |
 | --- | --- |
 | 1 | 5 seconds |
 | 2 | 30 seconds |
@@ -160,96 +188,114 @@ Backoff is staged, defined by `RETRY_BACKOFF_SECONDS` in `app/domain/outbox.py`:
 | 4 | 5 minutes |
 | 5+ | 15 minutes |
 
-Retries are scheduled with `availableAt`; the dispatcher never sleeps for the
-backoff. After `maxAttempts` (default 5) the event becomes `dead`, keeping its
-payload and `lastError` for inspection.
+Retries are represented by `availableAt`; the dispatcher does not sleep for a
+long backoff while holding work.
 
-Task-level failures are separate: the broker carries
-`SimpleRetryMiddleware(default_retry_count=3)`, so a failing handler is retried
-by Taskiq itself.
+Taskiq task failures are a separate layer and use
+`SimpleRetryMiddleware(default_retry_count=3)`.
 
-## Delivery guarantees
+## Delivery guarantee
 
-The system is **at-least-once, never exactly-once**. This sequence is possible:
+The system is **at-least-once**, not exactly-once.
+
+A valid failure window is:
 
 ```text
-task enqueued to Redis  →  dispatcher crashes  →  event not marked sent
-                        →  visibility timeout expires  →  event dispatched again
+enqueue to Redis succeeds
+        │
+dispatcher crashes before mark-as-sent
+        │
+visibility timeout expires
+        │
+event is dispatched again
 ```
 
-An event is only marked `sent` *after* the enqueue returns, so a broker outage
-always leaves the event retryable rather than silently dropped. The cost is
-duplicate delivery, which consumers must tolerate.
+That behavior is intentional. Consumers must tolerate duplicate delivery.
 
-Duplicates are handled at three levels:
+Outbox fact duplication is constrained by the unique `idempotencyKey` index.
+Handlers re-read authoritative state where stale payloads would be dangerous.
 
-1. **Fact level** — `outbox_events.idempotencyKey` has a unique index, so the
-   same fact cannot be recorded twice (`order.created:<orderId>`,
-   `order.status_changed:<orderId>:<status>`).
-2. **Task level** — `agent.process` claims `job_idempotency` before running the
-   LLM turn and releases the claim if the run fails, so a genuine retry proceeds
-   while a duplicate delivery returns successfully without re-running.
-3. **Handler level** — `order.update_status` re-reads the order from MongoDB
-   instead of trusting the payload, so a late or duplicate delivery can never
-   announce a stale status.
+## LINE webhook reliability
 
-Order creation itself remains idempotent through the pre-existing
-`Idempotency-Key` header and the unique `orders.idempotencyKey` index.
+Inbound LINE delivery also follows at-least-once semantics.
+
+The API intentionally does **not** write a permanent "processed" marker before
+Taskiq enqueue. Doing so creates this loss window:
+
+```text
+mark webhook processed
+        │
+process crashes
+        │
+task was never enqueued
+        │
+LINE retry is rejected as duplicate  ← lost message
+```
+
+Instead the API verifies the signature and enqueues `agent.process`. If enqueue
+fails, it returns HTTP 503 so LINE can retry. A retried webhook can enqueue the
+same command more than once, but every command carries the stable key:
+
+```text
+line:<LINE webhook event id>
+```
+
+`agent.process` claims that key in `job_idempotency` before running. Duplicate
+deliveries therefore return without re-running the LLM turn, while failed runs
+release the claim so Taskiq can retry.
+
+This chooses duplicate-safe delivery over silent loss.
 
 ## Correlation IDs
 
-The project's existing request id is the correlation id; no competing concept was
-introduced. `RequestIDMiddleware` sets it, `OrderService` copies it onto the
-outbox event, the dispatcher restores it while dispatching, and each task binds
-it again with `bind_correlation_id`. Structured logs therefore carry
-`correlationId` (plus `eventId`, `eventType`, `taskId`, `taskName`, `attempt`,
-`orderId`) along the whole path.
+The existing request ID is reused as the correlation ID:
 
-Logs never include access tokens, channel secrets, authorization headers, LINE
-recipients, or message bodies.
+```text
+HTTP request
+  → direct task or outbox fact
+  → dispatcher
+  → Taskiq task
+  → service
+```
 
-## Failure behaviour
+Structured logs may include `correlationId`, `eventId`, `eventType`, `taskId`,
+`taskName`, `attempt`, and `orderId`. Secrets, LINE recipients, and message
+bodies are not logged.
 
-| Scenario | Behaviour |
+## Failure behavior
+
+| Failure | Behavior |
 | --- | --- |
-| Task handler raises | Taskiq logs it and retries; the worker keeps running. |
-| One outbox event fails | It is rescheduled or marked dead; the batch and the polling loop continue. |
-| Redis unavailable | The enqueue fails, the event stays `failed` and retryable, nothing is marked `sent`. |
-| MongoDB hiccup during polling | Logged as `outbox_poll_failed`; the loop continues and events stay claimable. |
-| Worker unavailable | Messages accumulate in the Redis Stream and are consumed when it returns. |
-| Dead event | Retains payload, `attempts`, and `lastError` for inspection. |
+| Redis unavailable during outbox dispatch | Event becomes retryable; never marked sent |
+| API cannot enqueue LINE webhook task | API returns 503 so LINE can retry |
+| Worker unavailable | Tasks remain in Redis Streams |
+| Dispatcher crashes after claim | Lease expires and event becomes reclaimable |
+| Stale dispatcher resumes | Fencing token prevents stale status overwrite |
+| Repeated dispatcher crashes | Attempt budget eventually parks event as dead |
+| Task handler raises | Taskiq retry middleware handles the task |
+| Unknown outbox event | Event is parked as dead and remains inspectable |
 
 ## Operating
 
 ```bash
-# API
 uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-# Taskiq worker (consumes Redis Streams and runs handlers)
 taskiq worker app.core.taskiq:broker
-
-# Outbox dispatcher (polls MongoDB, enqueues tasks)
 python -m app.jobs.dispatcher
 ```
 
-Under Docker Compose, all three run as separate services (`backend`, `worker`,
-`dispatcher`). The worker and dispatcher publish no ports.
+Docker Compose runs these as separate `backend`, `worker`, and `dispatcher`
+services. Worker and dispatcher do not expose public ports.
 
-Inspecting the outbox:
+Useful outbox queries:
 
 ```javascript
-// Events that need attention
 db.outbox_events.find({status: "dead"}).sort({createdAt: -1})
 
-// Events currently retrying
-db.outbox_events.find({status: "failed"}, {eventType: 1, attempts: 1, lastError: 1})
+db.outbox_events.find(
+  {status: "failed"},
+  {eventType: 1, attempts: 1, lastError: 1, availableAt: 1}
+)
 ```
 
-`sent` events are removed by a TTL index seven days after `publishedAt`.
-
-## Scaling notes
-
-- The Taskiq worker scales horizontally; Redis Streams consumer groups
-  distribute messages.
-- The dispatcher is safe to run with several replicas because claims are atomic,
-  but one replica is enough — it is not the bottleneck.
+Sent events are removed by the existing TTL index seven days after
+`publishedAt`.
