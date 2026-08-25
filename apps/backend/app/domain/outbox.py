@@ -34,13 +34,14 @@ DEFAULT_MAX_ATTEMPTS = 5
 #: ``attempts - 1`` is used; the last value repeats for any further attempt.
 RETRY_BACKOFF_SECONDS: tuple[int, ...] = (5, 30, 120, 300, 900)
 
-#: How long a claimed event may stay in ``processing`` before another dispatcher
-#: is allowed to reclaim it. This is what makes a crashed dispatcher recoverable.
+#: How long one dispatcher owns a claimed event. If it dies, another dispatcher
+#: may reclaim the event after this lease expires.
 CLAIM_VISIBILITY_TIMEOUT_SECONDS = 60
 
 
 def retry_delay_seconds(attempts: int) -> int:
-    """Return the backoff for an event that has already been attempted ``attempts`` times."""
+    """Return the backoff for an event already attempted ``attempts`` times."""
+
     if attempts < 1:
         return RETRY_BACKOFF_SECONDS[0]
     index = min(attempts, len(RETRY_BACKOFF_SECONDS)) - 1
@@ -66,6 +67,7 @@ class OutboxEvent(BaseModel):
     last_error: str | None = None
     correlation_id: str | None = None
     idempotency_key: str | None = None
+    claim_id: str | None = None
 
     @classmethod
     def from_document(cls, document: dict[str, Any]) -> OutboxEvent:
@@ -82,4 +84,5 @@ class OutboxEvent(BaseModel):
             last_error=document.get("lastError"),
             correlation_id=document.get("correlationId"),
             idempotency_key=document.get("idempotencyKey"),
+            claim_id=document.get("claimId"),
         )
