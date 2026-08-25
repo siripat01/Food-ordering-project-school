@@ -101,7 +101,7 @@ jobs:
           ci_recommendation_secret="$(openssl rand -hex 32)"
           printf '%s\n' \
             'APP_ENV=test' \
-            'MONGODB_URI=mongodb://mongo:27017' \
+            'MONGODB_URI=mongodb://mongo:27017/?replicaSet=rs0' \
             "JWT_SECRET=${ci_jwt_secret}" \
             "RECOMMENDATION_USER_REF_SECRET=${ci_recommendation_secret}" \
             'FRONTEND_URL=http://localhost:3000' \
