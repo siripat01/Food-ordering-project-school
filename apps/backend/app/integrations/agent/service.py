@@ -7,6 +7,7 @@ from collections.abc import Awaitable
 from time import perf_counter
 from typing import Any, cast
 
+from pydantic import ValidationError
 from redis.asyncio import Redis
 
 from app.core.config import Settings
@@ -49,6 +50,33 @@ def visible_model_text(value: Any) -> str:
     """Remove provider reasoning blocks before returning or retaining a response."""
     content = value if isinstance(value, str) else str(value)
     return _HIDDEN_REASONING_BLOCK.sub("", content).strip()
+
+
+def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
+    """Return schema diagnostics without logging the rejected input values."""
+
+    errors: list[dict[str, Any]] = []
+    for error in exc.errors(include_input=False, include_url=False):
+        errors.append(
+            {
+                "loc": [str(part) for part in error.get("loc", ())],
+                "type": str(error.get("type", "validation_error")),
+                "msg": str(error.get("msg", "Invalid value"))[:300],
+            }
+        )
+    return errors[:20]
+
+
+def _tool_validation_feedback(tool_name: str, exc: ValidationError) -> str:
+    fields = [".".join(str(part) for part in error.get("loc", ())) for error in exc.errors()]
+    field_text = ", ".join(field for field in fields if field) or "arguments"
+    if tool_name == "create_own_order":
+        return (
+            "Invalid arguments for create_own_order "
+            f"({field_text}). Use the exact tool schema and only product IDs returned by "
+            "list_products. Do not use product names as product_id values."
+        )
+    return f"Invalid arguments for {tool_name} ({field_text}). Use the exact tool schema."
 
 
 class BoundedMemoryStore:
@@ -294,8 +322,9 @@ class CustomerAgentService:
                     break
                 confirmation_requested = False
                 for call in ai_message.tool_calls:
-                    tool = tool_by_name.get(call["name"])
-                    scoped_tool = scoped_by_name.get(call["name"])
+                    tool_name = str(call.get("name") or "unknown")
+                    tool = tool_by_name.get(tool_name)
+                    scoped_tool = scoped_by_name.get(tool_name)
                     if tool is None or scoped_tool is None:
                         result = "Tool is not authorized for this agent"
                     else:
@@ -313,12 +342,23 @@ class CustomerAgentService:
                                 mutation_pending = True
                                 break
                             result = await tool.ainvoke(arguments)
+                        except ValidationError as exc:
+                            validation_errors = _safe_validation_errors(exc)
+                            logger.warning(
+                                "customer_agent_tool_validation_failed",
+                                extra={
+                                    "error_type": type(exc).__name__,
+                                    "tool_name": tool_name,
+                                    "validation_errors": validation_errors,
+                                },
+                            )
+                            result = _tool_validation_feedback(tool_name, exc)
                         except Exception as exc:
                             logger.exception(
                                 "customer_agent_tool_failed",
                                 extra={
                                     "error_type": type(exc).__name__,
-                                    "tool_name": call.get("name"),
+                                    "tool_name": tool_name,
                                 },
                             )
                             result = "The requested operation could not be completed"
