@@ -21,6 +21,7 @@ _SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(api[_-]?key|authorization|cookie|jwt[_-]?secret|password|token)"
     r"\s*[:=]\s*[^\s,;]+"
 )
+_MAX_TRACEBACK_CHARS = 12_000
 
 
 def redact(value: str) -> str:
@@ -69,7 +70,9 @@ class JsonLogFormatter(logging.Formatter):
         "queue_name": "queueName",
         "task_id": "taskId",
         "task_name": "taskName",
+        "tool_name": "toolName",
         "upstream_status": "upstreamStatus",
+        "validation_errors": "validationErrors",
     }
 
     def format(self, record: logging.LogRecord) -> str:
@@ -88,6 +91,11 @@ class JsonLogFormatter(logging.Formatter):
                 payload[target] = redact(value) if isinstance(value, str) else value
         if record.exc_info and record.exc_info[0]:
             payload["errorType"] = record.exc_info[0].__name__
+            # ``formatException`` includes stack locations but never local variables.
+            # Redaction is still applied because exception messages can contain URLs,
+            # tokens, or other user-controlled text. Keep it bounded for log safety.
+            traceback_text = redact(self.formatException(record.exc_info))
+            payload["traceback"] = traceback_text[:_MAX_TRACEBACK_CHARS]
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
