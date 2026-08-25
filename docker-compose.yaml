@@ -53,8 +53,13 @@ services:
     env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
     restart: unless-stopped
     # Not published: the worker consumes from Redis and has no inbound surface.
+    # Override the API image healthcheck with process liveness for this runtime.
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     depends_on:
       mongo:
         condition: service_healthy
@@ -67,8 +72,13 @@ services:
     command: ["python", "-m", "app.jobs.dispatcher"]
     env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
     restart: unless-stopped
+    # Override the API image healthcheck with process liveness for this runtime.
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     depends_on:
       mongo:
         condition: service_healthy
