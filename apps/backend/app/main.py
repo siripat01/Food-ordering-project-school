@@ -18,8 +18,8 @@ from app.api.routes import (
     recommendations,
     staff,
 )
+from app.bootstrap import build_api_services, close_api_services
 from app.core.config import Settings, get_settings
-from app.core.container import ServiceContainer
 from app.core.middleware import RequestIDMiddleware
 from app.core.observability import ApplicationMetrics, configure_logging
 from app.core.taskiq import broker
@@ -42,35 +42,40 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
         if not initialize_clients:
             yield
             return
-        container = ServiceContainer(resolved_settings, metrics=application_metrics)
+
+        services = await build_api_services(
+            resolved_settings,
+            metrics=application_metrics,
+        )
+        broker_started = False
         try:
-            await container.start()
-            # The API is a Taskiq *client*: it enqueues work but never consumes
-            # it. The worker and the outbox dispatcher run as separate processes
-            # so no polling loop is started per Uvicorn worker.
+            # The API is a Taskiq client only. Taskiq selects CLIENT_STARTUP here;
+            # WORKER_STARTUP hooks run only inside an actual worker process.
             await broker.startup()
-            app.state.container = container
-            app.state.db = container.db
-            app.state.redis = container.redis.client
-            app.state.http_client = container.http_client
-            app.state.users = container.users
-            app.state.auth_sessions = container.auth_sessions
-            app.state.products = container.products
-            app.state.recommendation_runtime = container.recommendation_runtime
-            app.state.recommendations = container.recommendations
-            app.state.order_events = container.order_events
-            app.state.orders = container.orders
-            app.state.outbox = container.outbox
-            app.state.oauth_states = container.oauth_states
-            app.state.webhooks = container.webhooks
-            app.state.line_oauth = container.line_oauth
-            app.state.line_bot = container.line_bot
-            app.state.customer_agent = container.customer_agent
-            app.state.line_chat = container.line_chat
+            broker_started = True
+
+            # Routes consume the dependencies they need directly. Avoid exposing
+            # both a giant service container and duplicate app.state aliases.
+            app.state.db = services.db
+            app.state.redis = services.redis.client
+            app.state.http_client = services.http_client
+            app.state.users = services.users
+            app.state.auth_sessions = services.auth_sessions
+            app.state.products = services.products
+            app.state.recommendation_runtime = services.recommendation_runtime
+            app.state.recommendations = services.recommendations
+            app.state.order_events = services.order_events
+            app.state.orders = services.orders
+            app.state.outbox = services.outbox
+            app.state.oauth_states = services.oauth_states
+            app.state.webhooks = services.webhooks
+            app.state.line_oauth = services.line_oauth
+            app.state.line_bot = services.line_bot
             yield
         finally:
-            await broker.shutdown()
-            await container.close()
+            if broker_started:
+                await broker.shutdown()
+            await close_api_services(services)
 
     application = FastAPI(
         title="Food Ordering API",
