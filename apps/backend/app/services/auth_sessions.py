@@ -53,19 +53,22 @@ class AuthSessionService:
         refresh_claims = decode_token(
             refresh, expected_type=TokenType.REFRESH, settings=self.settings
         )
+        access_jti = access_claims.get("jti")
+        refresh_jti = refresh_claims.get("jti")
+        if not isinstance(access_jti, str) or not isinstance(refresh_jti, str):
+            raise ValueError("Issued token is missing a token identifier")
+
         ttl = self.settings.refresh_token_ttl_days * 24 * 60 * 60
         session_key = self._session_key(session_id)
         await cast(
             Awaitable[Any],
             self.redis.hset(
                 session_key,
-                mapping={"userId": user_id, "accessJti": str(access_claims["jti"])},
+                mapping={"userId": user_id, "accessJti": access_jti},
             ),
         )
         await self.redis.expire(session_key, ttl)
-        await self.redis.set(
-            self._refresh_key(str(refresh_claims["jti"])), self._digest(refresh), ex=ttl
-        )
+        await self.redis.set(self._refresh_key(refresh_jti), self._digest(refresh), ex=ttl)
         return access, refresh
 
     async def access_is_active(self, claims: dict[str, Any]) -> bool:
@@ -86,17 +89,29 @@ class AuthSessionService:
             refresh_token, expected_type=TokenType.REFRESH, settings=self.settings
         )
         session_id = claims.get("sid")
+        token_id = claims.get("jti")
+        subject = claims.get("sub")
         if not isinstance(session_id, str):
             return None
-        stored = await self.redis.getdel(self._refresh_key(str(claims["jti"])))
-        if stored != self._digest(refresh_token):
+        if not isinstance(token_id, str):
             return None
+        if not isinstance(subject, str):
+            return None
+
         session = await cast(
             Awaitable[dict[Any, Any]], self.redis.hgetall(self._session_key(session_id))
         )
-        if not session or session.get("userId") != claims.get("sub"):
+        if not session or session.get("userId") != subject:
             return None
-        return await self.issue(str(claims["sub"]), session_id=session_id)
+
+        # Consume the one-time refresh token only after all non-mutating checks pass.
+        # This avoids turning malformed/partial session state into an internal error
+        # that also burns the caller's refresh token.
+        stored = await self.redis.getdel(self._refresh_key(token_id))
+        if stored != self._digest(refresh_token):
+            return None
+
+        return await self.issue(subject, session_id=session_id)
 
     async def revoke(self, claims: dict[str, Any]) -> None:
         session_id = claims.get("sid")
