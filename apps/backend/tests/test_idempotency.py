@@ -41,32 +41,38 @@ async def test_duplicate_line_webhook_event_is_not_claimed_twice() -> None:
 
 
 @pytest.mark.asyncio
-async def test_job_idempotency_key_is_claimed_only_once() -> None:
+async def test_job_completion_marker_suppresses_completed_duplicate() -> None:
     keys = AsyncMock()
-    keys.insert_one.side_effect = [None, DuplicateKeyError("duplicate")]
+    keys.find_one.side_effect = [None, {"_id": "completed"}]
     service = IdempotencyService(SimpleNamespace(job_idempotency=keys))
 
-    assert await service.claim(scope="agent.process", key="line:event-1") is True
-    assert await service.claim(scope="agent.process", key="line:event-1") is False
+    assert await service.is_completed(scope="agent.process", key="line:event-1") is False
+    assert await service.is_completed(scope="agent.process", key="line:event-1") is True
+
+    keys.find_one.assert_awaited_with(
+        {"scope": "agent.process", "key": "line:event-1"},
+        projection={"_id": 1},
+    )
 
 
 @pytest.mark.asyncio
-async def test_released_job_idempotency_key_can_be_claimed_again() -> None:
+async def test_duplicate_completion_marker_is_harmless() -> None:
     keys = AsyncMock()
+    keys.insert_one.side_effect = DuplicateKeyError("duplicate")
     service = IdempotencyService(SimpleNamespace(job_idempotency=keys))
 
-    await service.release(scope="agent.process", key="line:event-1")
+    await service.mark_completed(scope="agent.process", key="line:event-1")
 
-    keys.delete_one.assert_awaited_once_with({"scope": "agent.process", "key": "line:event-1"})
+    keys.insert_one.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_job_idempotency_record_expires() -> None:
+async def test_job_completion_marker_expires() -> None:
     keys = AsyncMock()
     service = IdempotencyService(SimpleNamespace(job_idempotency=keys), retention_hours=2)
 
-    await service.claim(scope="agent.process", key="line:event-1")
+    await service.mark_completed(scope="agent.process", key="line:event-1")
 
     document = keys.insert_one.await_args.args[0]
-    assert document["expiresAt"] > document["createdAt"]
-    assert document["createdAt"].tzinfo is not None
+    assert document["expiresAt"] > document["completedAt"]
+    assert document["completedAt"].tzinfo is not None
