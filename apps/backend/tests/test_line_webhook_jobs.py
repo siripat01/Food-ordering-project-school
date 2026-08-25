@@ -17,7 +17,7 @@ class FakeTextMessage:
 class FakeMessageEvent:
     def __init__(self, event_id: str = "event-1") -> None:
         self.webhook_event_id = event_id
-        self.reply_token = "reply-token"
+        self.reply_token = event_id
         self.source = SimpleNamespace(user_id="line-user")
         self.message = FakeTextMessage("hello")
 
@@ -50,7 +50,7 @@ async def test_line_webhook_enqueues_with_a_stable_idempotency_key(monkeypatch) 
     enqueue.assert_awaited_once_with(
         line_user_id="line-user",
         message="hello",
-        reply_token="reply-token",
+        reply_token="event-42",
         idempotency_key="line:event-42",
         correlation_id="request-1",
     )
