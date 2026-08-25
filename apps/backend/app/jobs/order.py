@@ -6,7 +6,7 @@ from taskiq import Context, TaskiqDepends
 
 from app.core.taskiq import broker
 from app.domain.jobs import TaskName
-from app.jobs.context import bind_correlation_id, container_from
+from app.jobs.context import bind_correlation_id, services_from
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +18,9 @@ async def process_order(
     context: Context = TaskiqDepends(),
 ) -> None:
     """Post-commit processing for a newly created order."""
+
     bind_correlation_id(correlation_id, task_id=context.message.task_id)
-    container = container_from(context)
+    services = services_from(context)
     logger.info(
         "order_task_started",
         extra={
@@ -29,7 +30,7 @@ async def process_order(
             "task_name": TaskName.ORDER_PROCESS.value,
         },
     )
-    await container.order_workflow.process_created(order_id, correlation_id=correlation_id)
+    await services.order_workflow.process_created(order_id, correlation_id=correlation_id)
 
 
 @broker.task(task_name=TaskName.ORDER_UPDATE_STATUS.value)
@@ -39,8 +40,9 @@ async def update_order_status(
     context: Context = TaskiqDepends(),
 ) -> None:
     """Propagate a committed order status change to the customer."""
+
     bind_correlation_id(correlation_id, task_id=context.message.task_id)
-    container = container_from(context)
+    services = services_from(context)
     logger.info(
         "order_task_started",
         extra={
@@ -50,8 +52,9 @@ async def update_order_status(
             "task_name": TaskName.ORDER_UPDATE_STATUS.value,
         },
     )
-    await container.order_workflow.process_status_change(
-        order_id, correlation_id=correlation_id
+    await services.order_workflow.process_status_change(
+        order_id,
+        correlation_id=correlation_id,
     )
 
 
@@ -62,13 +65,10 @@ async def cancel_order(
     correlation_id: str | None = None,
     context: Context = TaskiqDepends(),
 ) -> None:
-    """Asynchronous cancellation command for an order the customer owns.
+    """Asynchronously cancel an order the authenticated customer owns."""
 
-    ``user_id`` is the authenticated owner resolved by the caller; the order
-    service still re-checks ownership and the allowed transition.
-    """
     bind_correlation_id(correlation_id, task_id=context.message.task_id)
-    container = container_from(context)
+    services = services_from(context)
     logger.info(
         "order_task_started",
         extra={
@@ -78,6 +78,8 @@ async def cancel_order(
             "task_name": TaskName.ORDER_CANCEL.value,
         },
     )
-    await container.order_workflow.cancel(
-        order_id, user_id=user_id, correlation_id=correlation_id
+    await services.order_workflow.cancel(
+        order_id,
+        user_id=user_id,
+        correlation_id=correlation_id,
     )

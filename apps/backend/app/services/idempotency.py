@@ -14,11 +14,14 @@ DEFAULT_RETENTION_HOURS = 24
 
 
 class IdempotencyService:
-    """Suppresses duplicate side effects under at-least-once delivery.
+    """Records completed background commands for duplicate suppression.
 
-    Redis Streams and the outbox both guarantee *at least* once, never exactly
-    once, so any handler with an external side effect claims a key first and
-    releases it if the work did not actually complete.
+    A completion marker is deliberately written only *after* the handler
+    succeeds. Writing a durable claim before execution can lose work if the
+    worker process dies after the claim but before the side effect. Under
+    at-least-once delivery, a rare concurrent duplicate is safer than silently
+    dropping the only retry. Destructive business operations still receive the
+    same idempotency key and enforce their own idempotency at the service layer.
     """
 
     def __init__(
@@ -30,23 +33,27 @@ class IdempotencyService:
         self.db = db
         self.retention_hours = retention_hours
 
-    async def claim(self, *, scope: str, key: str) -> bool:
-        """Return ``True`` when this caller is the first to claim ``key``."""
+    async def is_completed(self, *, scope: str, key: str) -> bool:
+        """Return whether this logical command completed successfully before."""
+
+        document = await self.db.job_idempotency.find_one(
+            {"scope": scope, "key": key},
+            projection={"_id": 1},
+        )
+        return document is not None
+
+    async def mark_completed(self, *, scope: str, key: str) -> None:
+        """Record successful completion; concurrent completions are harmless."""
+
         now = utc_now()
         try:
             await self.db.job_idempotency.insert_one(
                 {
                     "scope": scope,
                     "key": key,
-                    "createdAt": now,
+                    "completedAt": now,
                     "expiresAt": now + timedelta(hours=self.retention_hours),
                 }
             )
         except DuplicateKeyError:
-            logger.info("idempotent_replay_skipped", extra={"task_name": scope})
-            return False
-        return True
-
-    async def release(self, *, scope: str, key: str) -> None:
-        """Undo a claim so a failed attempt can be retried."""
-        await self.db.job_idempotency.delete_one({"scope": scope, "key": key})
+            logger.info("idempotent_completion_already_recorded", extra={"task_name": scope})

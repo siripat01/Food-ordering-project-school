@@ -10,48 +10,48 @@ from app.jobs.line import push_line, reply_line
 from app.jobs.order import cancel_order, process_order, update_order_status
 
 
-def context(container) -> SimpleNamespace:
+def context(services) -> SimpleNamespace:
     return SimpleNamespace(
-        state=SimpleNamespace(container=container),
+        state=SimpleNamespace(services=services),
         message=SimpleNamespace(task_id="task-1"),
     )
 
 
 @pytest.mark.asyncio
 async def test_order_process_task_delegates_to_the_order_workflow() -> None:
-    container = SimpleNamespace(order_workflow=AsyncMock())
+    services = SimpleNamespace(order_workflow=AsyncMock())
 
     await process_order.original_func(
-        "order-1", correlation_id="request-1", context=context(container)
+        "order-1", correlation_id="request-1", context=context(services)
     )
 
-    container.order_workflow.process_created.assert_awaited_once_with(
+    services.order_workflow.process_created.assert_awaited_once_with(
         "order-1", correlation_id="request-1"
     )
 
 
 @pytest.mark.asyncio
 async def test_order_update_status_task_delegates_to_the_order_workflow() -> None:
-    container = SimpleNamespace(order_workflow=AsyncMock())
+    services = SimpleNamespace(order_workflow=AsyncMock())
 
     await update_order_status.original_func(
-        "order-1", correlation_id="request-1", context=context(container)
+        "order-1", correlation_id="request-1", context=context(services)
     )
 
-    container.order_workflow.process_status_change.assert_awaited_once_with(
+    services.order_workflow.process_status_change.assert_awaited_once_with(
         "order-1", correlation_id="request-1"
     )
 
 
 @pytest.mark.asyncio
 async def test_order_cancel_task_delegates_to_the_order_workflow() -> None:
-    container = SimpleNamespace(order_workflow=AsyncMock())
+    services = SimpleNamespace(order_workflow=AsyncMock())
 
     await cancel_order.original_func(
-        "order-1", "user-1", correlation_id="request-1", context=context(container)
+        "order-1", "user-1", correlation_id="request-1", context=context(services)
     )
 
-    container.order_workflow.cancel.assert_awaited_once_with(
+    services.order_workflow.cancel.assert_awaited_once_with(
         "order-1", user_id="user-1", correlation_id="request-1"
     )
 
@@ -96,28 +96,28 @@ async def test_order_workflow_cancel_delegates_to_the_order_service() -> None:
 
 @pytest.mark.asyncio
 async def test_line_push_task_delegates_to_the_line_client() -> None:
-    container = SimpleNamespace(line_bot=AsyncMock())
+    services = SimpleNamespace(line_bot=AsyncMock())
     messages = [{"type": "text", "text": "ready"}]
 
     await push_line.original_func(
-        "line-recipient", messages, correlation_id="request-1", context=context(container)
+        "line-recipient", messages, correlation_id="request-1", context=context(services)
     )
 
-    container.line_bot.push_messages.assert_awaited_once_with(
+    services.line_bot.push_messages.assert_awaited_once_with(
         line_user_id="line-recipient", messages=messages
     )
 
 
 @pytest.mark.asyncio
 async def test_line_reply_task_delegates_to_the_line_client() -> None:
-    container = SimpleNamespace(line_bot=AsyncMock())
+    services = SimpleNamespace(line_bot=AsyncMock())
     messages = [{"type": "text", "text": "hello"}]
 
     await reply_line.original_func(
-        "reply-token", messages, correlation_id="request-1", context=context(container)
+        "reply-token", messages, correlation_id="request-1", context=context(services)
     )
 
-    container.line_bot.reply_messages.assert_awaited_once_with(
+    services.line_bot.reply_messages.assert_awaited_once_with(
         reply_token="reply-token", messages=messages
     )
 
@@ -126,14 +126,14 @@ async def test_line_reply_task_delegates_to_the_line_client() -> None:
 async def test_line_push_task_logs_no_recipient_or_message_content(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    container = SimpleNamespace(line_bot=AsyncMock())
+    services = SimpleNamespace(line_bot=AsyncMock())
 
     with caplog.at_level("INFO"):
         await push_line.original_func(
             "line-recipient",
             [{"type": "text", "text": "private order details"}],
             correlation_id="request-1",
-            context=context(container),
+            context=context(services),
         )
 
     assert "line_push_task_started" in caplog.text
@@ -142,9 +142,9 @@ async def test_line_push_task_logs_no_recipient_or_message_content(
 
 
 @pytest.mark.asyncio
-async def test_agent_task_delegates_to_the_chat_service() -> None:
-    container = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
-    container.idempotency.claim.return_value = True
+async def test_agent_task_marks_completion_after_success() -> None:
+    services = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
+    services.idempotency.is_completed.return_value = False
 
     await process_agent_message.original_func(
         "line-user",
@@ -152,50 +152,53 @@ async def test_agent_task_delegates_to_the_chat_service() -> None:
         reply_token="reply-token",
         idempotency_key="line:event-1",
         correlation_id="request-1",
-        context=context(container),
+        context=context(services),
     )
 
-    container.idempotency.claim.assert_awaited_once_with(
+    services.idempotency.is_completed.assert_awaited_once_with(
         scope=IDEMPOTENCY_SCOPE, key="line:event-1"
     )
-    container.line_chat.handle_text_message.assert_awaited_once_with(
+    services.line_chat.handle_text_message.assert_awaited_once_with(
         line_user_id="line-user",
         text="ขอผัดกะเพรา",
         reply_token="reply-token",
         idempotency_key="line:event-1",
+        correlation_id="request-1",
         show_loading=True,
+    )
+    services.idempotency.mark_completed.assert_awaited_once_with(
+        scope=IDEMPOTENCY_SCOPE, key="line:event-1"
     )
 
 
 @pytest.mark.asyncio
-async def test_duplicate_agent_delivery_is_skipped() -> None:
-    container = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
-    container.idempotency.claim.return_value = False
+async def test_completed_agent_delivery_is_skipped() -> None:
+    services = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
+    services.idempotency.is_completed.return_value = True
 
     await process_agent_message.original_func(
         "line-user",
         "ขอผัดกะเพรา",
         idempotency_key="line:event-1",
-        context=context(container),
+        context=context(services),
     )
 
-    container.line_chat.handle_text_message.assert_not_awaited()
+    services.line_chat.handle_text_message.assert_not_awaited()
+    services.idempotency.mark_completed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_failed_agent_run_releases_its_idempotency_claim_for_retry() -> None:
-    container = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
-    container.idempotency.claim.return_value = True
-    container.line_chat.handle_text_message.side_effect = RuntimeError("llm down")
+async def test_failed_agent_run_does_not_mark_completion() -> None:
+    services = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
+    services.idempotency.is_completed.return_value = False
+    services.line_chat.handle_text_message.side_effect = RuntimeError("llm down")
 
     with pytest.raises(RuntimeError):
         await process_agent_message.original_func(
             "line-user",
             "ขอผัดกะเพรา",
             idempotency_key="line:event-1",
-            context=context(container),
+            context=context(services),
         )
 
-    container.idempotency.release.assert_awaited_once_with(
-        scope=IDEMPOTENCY_SCOPE, key="line:event-1"
-    )
+    services.idempotency.mark_completed.assert_not_awaited()

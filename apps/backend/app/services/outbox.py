@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from typing import Any
+from uuid import uuid4
 
 from pymongo import ASCENDING, ReturnDocument
 from pymongo.asynchronous.client_session import AsyncClientSession
@@ -21,6 +22,7 @@ from app.domain.outbox import (
 logger = logging.getLogger(__name__)
 
 _MAX_ERROR_LENGTH = 500
+_EXHAUSTED_LEASE_ERROR = "Dispatch lease expired after maximum attempts"
 
 CLAIMABLE_STATUSES = [
     OutboxStatus.PENDING.value,
@@ -29,12 +31,15 @@ CLAIMABLE_STATUSES = [
 ]
 
 
+class OutboxLeaseLostError(RuntimeError):
+    """Raised when a stale dispatcher tries to mutate an event it no longer owns."""
+
+
 class OutboxRepository:
     """Mongo access for the transactional outbox collection.
 
-    The repository deliberately knows nothing about Taskiq. It only stores and
-    transitions committed facts; turning them into background commands is the
-    dispatcher's job.
+    The repository deliberately knows nothing about Taskiq. It stores facts and
+    enforces claim ownership; turning facts into commands is the dispatcher's job.
     """
 
     def __init__(self, db: MongoDatabase) -> None:
@@ -50,16 +55,15 @@ class OutboxRepository:
         return str(result.inserted_id)
 
     async def claim_one(self) -> dict[str, Any] | None:
-        """Atomically move one due event into ``processing``.
+        """Atomically lease one due event to one dispatcher instance.
 
-        A single ``find_one_and_update`` is the claim, so two dispatchers racing
-        on the same event can never both win. ``availableAt`` doubles as a
-        visibility deadline: an event left in ``processing`` by a crashed
-        dispatcher becomes claimable again once the deadline passes, and a
-        ``failed`` event becomes claimable again once its backoff elapses.
-        Terminal statuses (``sent``, ``dead``) are never claimed.
+        ``claimId`` is a fencing token. A dispatcher may update the event only
+        while that token still matches, so an expired/stale dispatcher cannot
+        overwrite the result of a newer claimant.
         """
+
         now = utc_now()
+        claim_id = uuid4().hex
         return await self.db.outbox_events.find_one_and_update(
             {
                 "status": {"$in": CLAIMABLE_STATUSES},
@@ -68,6 +72,7 @@ class OutboxRepository:
             {
                 "$set": {
                     "status": OutboxStatus.PROCESSING.value,
+                    "claimId": claim_id,
                     "claimedAt": now,
                     "availableAt": now + timedelta(seconds=CLAIM_VISIBILITY_TIMEOUT_SECONDS),
                 },
@@ -77,18 +82,37 @@ class OutboxRepository:
             return_document=ReturnDocument.AFTER,
         )
 
-    async def update_status(self, event_id: str, changes: dict[str, Any]) -> None:
-        await self.db.outbox_events.update_one(
-            {"_id": parse_object_id(event_id)},
-            {"$set": changes},
+    async def update_claimed(
+        self,
+        event_id: str,
+        *,
+        claim_id: str,
+        changes: dict[str, Any],
+    ) -> bool:
+        """Update a processing event only if the caller still owns its lease."""
+
+        result = await self.db.outbox_events.update_one(
+            {
+                "_id": parse_object_id(event_id),
+                "status": OutboxStatus.PROCESSING.value,
+                "claimId": claim_id,
+            },
+            {
+                "$set": changes,
+                "$unset": {
+                    "claimId": "",
+                    "claimedAt": "",
+                },
+            },
         )
+        return bool(result.matched_count)
 
     async def find_one(self, event_id: str) -> dict[str, Any] | None:
         return await self.db.outbox_events.find_one({"_id": parse_object_id(event_id)})
 
 
 class OutboxService:
-    """Writes committed facts to the outbox and owns their delivery lifecycle."""
+    """Writes committed facts and owns the outbox delivery lifecycle."""
 
     def __init__(
         self,
@@ -108,12 +132,11 @@ class OutboxService:
         correlation_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> str | None:
-        """Persist one fact.
+        """Persist one fact in the caller's transaction.
 
-        Must be called with the same ``session`` as the business write it
-        belongs to, so the fact and the state it describes commit together.
-        Returns ``None`` when ``idempotency_key`` was already recorded.
+        Returns ``None`` when the same idempotency key was already recorded.
         """
+
         now = utc_now()
         document = serialize_mongo(
             {
@@ -149,19 +172,48 @@ class OutboxService:
         return event_id
 
     async def claim_pending_events(self, *, limit: int = 20) -> list[OutboxEvent]:
-        """Claim up to ``limit`` due events for this dispatcher instance."""
+        """Claim up to ``limit`` due events.
+
+        A crash consumes an attempt because claiming increments ``attempts``.
+        If every previous attempt died without reporting failure, the next
+        reclaim fences the exhausted event as ``dead`` instead of dispatching it
+        forever.
+        """
+
         claimed: list[OutboxEvent] = []
         for _ in range(max(limit, 0)):
             document = await self.repository.claim_one()
             if document is None:
                 break
-            claimed.append(OutboxEvent.from_document(document))
+            event = OutboxEvent.from_document(document)
+            if event.attempts > event.max_attempts:
+                await self.mark_as_dead(event, error=_EXHAUSTED_LEASE_ERROR)
+                continue
+            claimed.append(event)
         return claimed
 
-    async def mark_as_sent(self, event: OutboxEvent) -> None:
-        await self.repository.update_status(
+    async def _transition_claimed(
+        self,
+        event: OutboxEvent,
+        *,
+        changes: dict[str, Any],
+    ) -> None:
+        if not event.claim_id:
+            raise OutboxLeaseLostError(f"Outbox event {event.id} has no active claim")
+        updated = await self.repository.update_claimed(
             event.id,
-            {
+            claim_id=event.claim_id,
+            changes=changes,
+        )
+        if not updated:
+            raise OutboxLeaseLostError(
+                f"Outbox event {event.id} is no longer owned by claim {event.claim_id}"
+            )
+
+    async def mark_as_sent(self, event: OutboxEvent) -> None:
+        await self._transition_claimed(
+            event,
+            changes={
                 "status": OutboxStatus.SENT.value,
                 "publishedAt": utc_now(),
                 "lastError": None,
@@ -169,16 +221,14 @@ class OutboxService:
         )
 
     async def mark_as_failed(self, event: OutboxEvent, *, error: str) -> OutboxStatus:
-        """Schedule a retry, or give up once ``max_attempts`` is reached.
+        """Schedule a retry, or park the event after its final failed attempt."""
 
-        The payload is never cleared, so a dead event stays fully inspectable.
-        """
         if event.attempts >= event.max_attempts:
             await self.mark_as_dead(event, error=error)
             return OutboxStatus.DEAD
-        await self.repository.update_status(
-            event.id,
-            {
+        await self._transition_claimed(
+            event,
+            changes={
                 "status": OutboxStatus.FAILED.value,
                 "lastError": error[:_MAX_ERROR_LENGTH],
                 "availableAt": next_available_at(event.attempts),
@@ -196,9 +246,9 @@ class OutboxService:
         return OutboxStatus.FAILED
 
     async def mark_as_dead(self, event: OutboxEvent, *, error: str) -> None:
-        await self.repository.update_status(
-            event.id,
-            {
+        await self._transition_claimed(
+            event,
+            changes={
                 "status": OutboxStatus.DEAD.value,
                 "lastError": error[:_MAX_ERROR_LENGTH],
             },

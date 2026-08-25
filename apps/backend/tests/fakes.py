@@ -74,12 +74,7 @@ class FakeRedis:
 
 
 class FakeOutboxCollection:
-    """In-memory stand-in for the outbox collection.
-
-    Implements only what the outbox repository uses, but implements the claim
-    faithfully: ``find_one_and_update`` matches and mutates one document under a
-    single lock-free step, which is what makes concurrent claims safe in Mongo.
-    """
+    """In-memory stand-in for the outbox collection."""
 
     def __init__(self) -> None:
         self.documents: list[dict] = []
@@ -112,7 +107,7 @@ class FakeOutboxCollection:
                     value is not None and value <= condition["$lte"]
                 ):
                     return False
-            elif value != condition:
+            elif str(value) != str(condition):
                 return False
         return True
 
@@ -127,17 +122,22 @@ class FakeOutboxCollection:
         document.update(update.get("$set", {}))
         for field, amount in update.get("$inc", {}).items():
             document[field] = document.get(field, 0) + amount
+        for field in update.get("$unset", {}):
+            document.pop(field, None)
         return dict(document)
 
     async def update_one(self, query, update):
         for document in self.documents:
-            if str(document["_id"]) == str(query["_id"]):
-                document.update(update.get("$set", {}))
-                return
-        return
+            if not self._matches(document, query):
+                continue
+            document.update(update.get("$set", {}))
+            for field in update.get("$unset", {}):
+                document.pop(field, None)
+            return SimpleNamespace(matched_count=1)
+        return SimpleNamespace(matched_count=0)
 
     async def find_one(self, query):
         for document in self.documents:
-            if str(document["_id"]) == str(query["_id"]):
+            if self._matches(document, query):
                 return dict(document)
         return None

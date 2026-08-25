@@ -7,7 +7,7 @@ from taskiq import Context, TaskiqDepends
 
 from app.core.taskiq import broker
 from app.domain.jobs import TaskName
-from app.jobs.context import bind_correlation_id, container_from
+from app.jobs.context import bind_correlation_id, services_from
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +20,9 @@ async def push_line(
     context: Context = TaskiqDepends(),
 ) -> None:
     """Proactive LINE message addressed to a LINE user id."""
+
     bind_correlation_id(correlation_id, task_id=context.message.task_id)
-    container = container_from(context)
+    services = services_from(context)
     logger.info(
         "line_push_task_started",
         extra={
@@ -30,7 +31,7 @@ async def push_line(
             "task_name": TaskName.LINE_PUSH.value,
         },
     )
-    await container.line_bot.push_messages(line_user_id=line_user_id, messages=messages)
+    await services.line_bot.push_messages(line_user_id=line_user_id, messages=messages)
 
 
 @broker.task(task_name=TaskName.LINE_REPLY.value)
@@ -45,8 +46,9 @@ async def reply_line(
     Reply tokens expire quickly and are single-use, so a retried delivery is
     expected to fail upstream rather than duplicate a message.
     """
+
     bind_correlation_id(correlation_id, task_id=context.message.task_id)
-    container = container_from(context)
+    services = services_from(context)
     logger.info(
         "line_reply_task_started",
         extra={
@@ -55,4 +57,4 @@ async def reply_line(
             "task_name": TaskName.LINE_REPLY.value,
         },
     )
-    await container.line_bot.reply_messages(reply_token=reply_token, messages=messages)
+    await services.line_bot.reply_messages(reply_token=reply_token, messages=messages)
