@@ -84,10 +84,7 @@ class OutboxDispatcher:
         try:
             await handler(event)
         except Exception as exc:
-            await self.outbox.mark_as_failed(
-                event,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            await self.outbox.mark_as_failed(event, error=f"{type(exc).__name__}: {exc}")
             logger.warning(
                 "outbox_dispatch_failed",
                 extra={
@@ -185,9 +182,7 @@ async def main(settings: Settings | None = None) -> None:
         await broker.startup()
         broker_started = True
 
-        polling = OutboxPollingDispatcher(
-            OutboxDispatcher(OutboxService(OutboxRepository(db)))
-        )
+        polling = OutboxPollingDispatcher(OutboxDispatcher(OutboxService(OutboxRepository(db))))
         loop = asyncio.get_running_loop()
         for received in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
