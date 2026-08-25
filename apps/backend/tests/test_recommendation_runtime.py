@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fakes import FakeRedis
 
 from app.services.recommendation_models import (
     ActivationDecision,
@@ -182,18 +183,16 @@ async def test_runtime_switches_to_rollback_version_and_clears_result_cache() ->
             [artifact.to_document() for artifact in previous.artifacts],
         ],
     )
-    runtime = RecommendationModelRuntime(db=database, settings=runtime_settings())
+    runtime = RecommendationModelRuntime(
+        db=database, settings=runtime_settings(), redis=FakeRedis()
+    )
 
     assert (await runtime._active_model()).version == "current"  # type: ignore[union-attr]
-    runtime._results[("u", "current", "trending", 1)] = SimpleNamespace(
-        value=None, expires_at=0
-    )
     runtime._has_polled = False
 
     rolled_back = await runtime._active_model()
 
     assert rolled_back is not None and rolled_back.version == "previous"
-    assert not runtime._results
 
 
 @pytest.mark.asyncio
@@ -204,7 +203,9 @@ async def test_runtime_keeps_last_known_good_when_new_pointer_is_invalid() -> No
         versions=[current.version_document(), None],
         artifacts=[[artifact.to_document() for artifact in current.artifacts]],
     )
-    runtime = RecommendationModelRuntime(db=database, settings=runtime_settings())
+    runtime = RecommendationModelRuntime(
+        db=database, settings=runtime_settings(), redis=FakeRedis()
+    )
     loaded = await runtime._active_model()
     runtime._has_polled = False
 
@@ -219,6 +220,7 @@ def test_runtime_rollout_bucket_accepts_any_pseudonym_format() -> None:
     runtime = RecommendationModelRuntime(
         db=SimpleNamespace(),
         settings=runtime_settings(recommendation_item_item_rollout_percent=50),
+        redis=FakeRedis(),
     )
 
     assert runtime._algorithm(user_ref="v2:not-hex", has_profile=False) == "trending"

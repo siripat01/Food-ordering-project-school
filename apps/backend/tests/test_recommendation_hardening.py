@@ -291,7 +291,7 @@ async def test_user_data_purge_covers_previous_key_versions_and_runtime_cache() 
         "v1": SecretStr("previous-recommendation-ref-secret-0123456789abcdef")
     }
     service, db, _ = recommendation_service(settings=settings)
-    runtime = SimpleNamespace(evict_user=Mock())
+    runtime = SimpleNamespace(evict_user=AsyncMock())
     service.runtime = runtime
 
     await service.purge_user_data(user_id="user-123")

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from collections import deque
+import json
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from time import monotonic
-from typing import Any
+from typing import Any, cast
+from uuid import uuid4
+
+from redis.asyncio import Redis
 
 CONFIRMATION_COMMANDS = frozenset({"ยืนยัน", "ยืนยันรายการ", "confirm"})
 CANCELLATION_COMMANDS = frozenset({"ยกเลิก", "ยกเลิกรายการ", "cancel"})
@@ -23,21 +26,17 @@ class PendingAction:
 
 
 class PendingActionStore:
-    """Short-lived, per-process confirmation state keyed by authenticated user ID."""
+    """Redis-backed, short-lived confirmation state keyed by authenticated user ID."""
 
-    def __init__(self, *, ttl_minutes: int) -> None:
-        self.ttl = timedelta(minutes=ttl_minutes)
-        self.entries: dict[str, PendingAction] = {}
+    def __init__(self, redis: Redis, *, ttl_minutes: int) -> None:
+        self.redis = redis
+        self.ttl_seconds = ttl_minutes * 60
 
-    def _purge_expired(self) -> None:
-        now = datetime.now(UTC)
-        self.entries = {
-            user_id: action
-            for user_id, action in self.entries.items()
-            if action.expires_at > now
-        }
+    @staticmethod
+    def _key(user_id: str) -> str:
+        return f"agent:pending-action:{user_id}"
 
-    def put(
+    async def put(
         self,
         *,
         user_id: str,
@@ -45,47 +44,84 @@ class PendingActionStore:
         arguments: dict[str, Any],
         idempotency_key: str,
     ) -> PendingAction:
-        self._purge_expired()
-        action = PendingAction(
-            tool_name=tool_name,
-            arguments=arguments,
-            idempotency_key=idempotency_key,
-            expires_at=datetime.now(UTC) + self.ttl,
+        expires_at = datetime.now(UTC) + timedelta(seconds=self.ttl_seconds)
+        action = PendingAction(tool_name, arguments, idempotency_key, expires_at)
+        await self.redis.set(
+            self._key(user_id),
+            json.dumps(
+                {
+                    "toolName": tool_name,
+                    "arguments": arguments,
+                    "idempotencyKey": idempotency_key,
+                    "expiresAt": expires_at.isoformat(),
+                },
+                separators=(",", ":"),
+            ),
+            ex=self.ttl_seconds,
         )
-        self.entries[user_id] = action
         return action
 
-    def get(self, user_id: str) -> PendingAction | None:
-        self._purge_expired()
-        return self.entries.get(user_id)
+    async def get(self, user_id: str) -> PendingAction | None:
+        return self._deserialize(await self.redis.get(self._key(user_id)))
 
-    def consume(self, user_id: str) -> PendingAction | None:
-        self._purge_expired()
-        return self.entries.pop(user_id, None)
+    async def consume(self, user_id: str) -> PendingAction | None:
+        return self._deserialize(await self.redis.getdel(self._key(user_id)))
 
-    def clear(self, user_id: str) -> None:
-        self.entries.pop(user_id, None)
+    async def clear(self, user_id: str) -> None:
+        await self.redis.delete(self._key(user_id))
+
+    @staticmethod
+    def _deserialize(raw: str | bytes | None) -> PendingAction | None:
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+            expires_at = datetime.fromisoformat(value["expiresAt"])
+            if expires_at <= datetime.now(UTC):
+                return None
+            arguments = value["arguments"]
+            if not isinstance(arguments, dict):
+                return None
+            return PendingAction(
+                tool_name=str(value["toolName"]),
+                arguments=arguments,
+                idempotency_key=str(value["idempotencyKey"]),
+                expires_at=expires_at,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
 
 
 class PerUserRateLimiter:
-    """Bounded in-process sliding-window limiter for authenticated LLM requests."""
+    """Redis sliding-window limiter shared by all backend processes."""
 
-    def __init__(self, *, requests_per_minute: int) -> None:
+    _ALLOW_SCRIPT = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local cutoff = now - 60
+local limit = tonumber(ARGV[2])
+local member = ARGV[3]
+redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+if redis.call('ZCARD', key) >= limit then return 0 end
+redis.call('ZADD', key, now, member)
+redis.call('EXPIRE', key, 61)
+return 1
+"""
+
+    def __init__(self, redis: Redis, *, requests_per_minute: int) -> None:
+        self.redis = redis
         self.limit = requests_per_minute
-        self.entries: dict[str, deque[float]] = {}
 
-    def allow(self, user_id: str) -> bool:
-        now = monotonic()
-        cutoff = now - 60
-        active: dict[str, deque[float]] = {}
-        for key, timestamps in self.entries.items():
-            while timestamps and timestamps[0] <= cutoff:
-                timestamps.popleft()
-            if timestamps:
-                active[key] = timestamps
-        self.entries = active
-        timestamps = self.entries.setdefault(user_id, deque())
-        if len(timestamps) >= self.limit:
-            return False
-        timestamps.append(now)
-        return True
+    async def allow(self, user_id: str) -> bool:
+        allowed = await cast(
+            Awaitable[Any],
+            self.redis.eval(
+                self._ALLOW_SCRIPT,
+                1,
+                f"agent:rate-limit:{user_id}",
+                str(datetime.now(UTC).timestamp()),
+                str(self.limit),
+                uuid4().hex,
+            ),
+        )
+        return bool(allowed)

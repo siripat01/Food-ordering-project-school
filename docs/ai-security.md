@@ -30,7 +30,7 @@ This design addresses direct prompt injection, indirect injection through catalo
 
 Accepted confirmations are `ยืนยัน`, `ยืนยันรายการ`, and `confirm`. Accepted cancellations are `ยกเลิก`, `ยกเลิกรายการ`, and `cancel`. A sentence containing one of those words is not confirmation. Confirmation execution rebuilds the scoped tools from the authenticated identity and uses the original idempotency key.
 
-Pending actions are in-memory, single-use, and expiring. Restarting the process safely discards them. A new multi-replica architecture must move confirmation state and rate limits into a shared bounded store before traffic is distributed across replicas.
+Pending actions are Redis-backed, single-use, and expiring. Confirmation consumption uses Redis `GETDEL`, so one confirmation cannot execute in two backend processes. The per-user rate limiter is also Redis-backed with an atomic sliding-window script.
 
 ## Indirect prompt injection
 
@@ -38,7 +38,7 @@ Catalog names and descriptions can contain attacker-like text if upstream admini
 
 ## Rate limiting
 
-`LLM_REQUESTS_PER_MINUTE` limits requests per authenticated user in each backend process. It reduces model-cost and automated tool abuse but is not a distributed denial-of-service control. Edge or API-gateway limits remain appropriate for IP-level abuse. `LLM_CONFIRMATION_TTL_MINUTES` bounds pending-action lifetime.
+`LLM_REQUESTS_PER_MINUTE` limits requests per authenticated user across backend processes. It reduces model-cost and automated tool abuse but is not a distributed denial-of-service control. Edge or API-gateway limits remain appropriate for IP-level abuse. `LLM_CONFIRMATION_TTL_MINUTES` bounds pending-action lifetime.
 
 ## Regression tests
 
@@ -58,6 +58,6 @@ The automated suite verifies that:
 
 - A customer can still explicitly confirm a harmful action presented to them. The confirmation message intentionally states the operation and requires a separate message, but it is not a cryptographic proof of comprehension.
 - Read-only model output may repeat misleading catalog text. Product content remains an admin trust boundary and should be reviewed.
-- In-memory conversation history can retain adversarial text until its bounded TTL expires.
+- Redis-backed conversation history can retain adversarial text until its bounded TTL expires.
 - Provider behavior and tool-calling quality require sandbox evaluation whenever models or providers change.
 - Process-local controls assume the documented single-replica deployment.

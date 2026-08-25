@@ -1,6 +1,24 @@
 name: hiwkaw-production
 
 services:
+  redis:
+    image: redis:7.4.2-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - private
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   backend:
     image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to an immutable GHCR image tag or digest}
     pull_policy: always
@@ -12,6 +30,9 @@ services:
       - "8000"
     networks:
       - private
+    depends_on:
+      redis:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -51,6 +72,9 @@ services:
 networks:
   private:
     driver: bridge
+
+volumes:
+  redis-data:
 
 secrets:
   cloudflare_tunnel_token:

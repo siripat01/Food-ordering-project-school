@@ -12,6 +12,7 @@ from app.core.config import Settings
 
 class TokenType(StrEnum):
     ACCESS = "access"
+    REFRESH = "refresh"
     LINE_CHAT = "line_chat"
 
 

@@ -10,7 +10,7 @@ async def liveness() -> dict[str, str]:
 
 @router.get("/ready")
 async def readiness(request: Request, response: Response) -> dict[str, str]:
-    ready = await request.app.state.db.ping()
+    ready = await request.app.state.db.ping() and bool(await request.app.state.redis.ping())
     if not ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "not_ready"}

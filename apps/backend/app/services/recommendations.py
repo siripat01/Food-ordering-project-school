@@ -279,7 +279,7 @@ class RecommendationService:
         user_refs = self._all_user_refs(user_id)
         if self.runtime is not None:
             for user_ref in user_refs:
-                self.runtime.evict_user(user_ref)
+                await self.runtime.evict_user(user_ref)
         query = {"userRef": {"$in": list(user_refs)}}
         await self.db.recommendation_slates.delete_many(query)
         await self.db.recommendation_events.delete_many(query)

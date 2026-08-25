@@ -143,11 +143,10 @@ class LiteLLMGateway:
             routing_strategy=self.settings.llm_routing_strategy,
             num_retries=self.settings.llm_max_retries,
             timeout=self.settings.llm_timeout_seconds,
+            redis_url=str(self.settings.redis_url) if self.settings.llm_cache_enabled else None,
             cache_responses=self.settings.llm_cache_enabled,
             cache_kwargs={
-                "type": "local",
                 "ttl": self.settings.llm_cache_ttl_seconds,
-                "max_size_in_memory": self.settings.llm_cache_max_entries,
                 "max_size_per_item": 64_000,
             },
             set_verbose=False,

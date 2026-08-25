@@ -2,7 +2,7 @@
 
 ## Status and decision
 
-The recommendation workload remains inside the FastAPI modular monolith. Model builds are explicit backend commands and serving uses MongoDB plus bounded in-process caches. The implementation does not require a GPU, vector database, Redis, a separate recommendation service, or heavy ML dependencies.
+The recommendation workload remains inside the FastAPI modular monolith. Model builds are explicit backend commands and serving uses MongoDB plus Redis-backed short-lived result caching. The implementation does not require a GPU, vector database, a separate recommendation service, or heavy ML dependencies.
 
 | Delivery slice | Working-tree status | Production state |
 | --- | --- | --- |

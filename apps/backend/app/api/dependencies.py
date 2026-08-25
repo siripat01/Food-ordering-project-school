@@ -4,11 +4,13 @@ from collections.abc import Callable, Coroutine
 from typing import Annotated, Any, cast
 
 from fastapi import Depends, HTTPException, Request, status
+from redis.asyncio import Redis
 
 from app.core.config import Settings
 from app.core.security import TokenError, TokenType, decode_token
 from app.db.mongodb import MongoDatabase
 from app.domain.users import CurrentUser, Role
+from app.services.auth_sessions import AuthSessionService
 from app.services.order_updates import OrderEventBroker
 from app.services.orders import OrderService
 from app.services.products import ProductService
@@ -22,6 +24,10 @@ async def get_settings(request: Request) -> Settings:
 
 async def get_db(request: Request) -> MongoDatabase:
     return cast(MongoDatabase, request.app.state.db)
+
+
+async def get_redis(request: Request) -> Redis:
+    return cast(Redis, request.app.state.redis)
 
 
 async def get_user_service(request: Request) -> UserService:
@@ -68,6 +74,13 @@ async def get_current_user(
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    sessions = cast(AuthSessionService, request.app.state.auth_sessions)
+    if not await sessions.access_is_active(payload):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication session has expired or was revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     user = await users.get_by_id(str(payload["sub"]))
     if user is None or not user.active:
         raise HTTPException(

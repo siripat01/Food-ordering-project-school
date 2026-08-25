@@ -23,6 +23,7 @@ from app.core.config import Settings, get_settings
 from app.core.middleware import RequestIDMiddleware
 from app.core.observability import ApplicationMetrics, configure_logging
 from app.db.mongodb import MongoDatabase
+from app.db.redis import RedisDatabase
 from app.domain.errors import (
     ConflictError,
     DomainError,
@@ -33,6 +34,7 @@ from app.domain.errors import (
 from app.integrations.agent.service import CustomerAgentService
 from app.integrations.agent.tools import CustomerToolFactory
 from app.integrations.line import LineBotClient, LineOAuthClient
+from app.services.auth_sessions import AuthSessionService
 from app.services.oauth import OAuthStateService
 from app.services.order_updates import (
     LineOrderStatusNotifier,
@@ -58,25 +60,30 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
             yield
             return
         db = MongoDatabase(resolved_settings)
+        redis = RedisDatabase(resolved_settings)
         http_client: httpx.AsyncClient | None = None
         line_bot = LineBotClient(resolved_settings)
         customer_agent: CustomerAgentService | None = None
         order_updates: OrderUpdateDispatcher | None = None
         try:
             await db.connect()
+            await redis.connect()
             http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(resolved_settings.llm_timeout_seconds)
             )
             await line_bot.start()
 
             app.state.db = db
+            app.state.redis = redis.client
             app.state.http_client = http_client
             app.state.users = UserService(db)
+            app.state.auth_sessions = AuthSessionService(redis.client, resolved_settings)
             app.state.products = ProductService(db)
             app.state.recommendation_runtime = RecommendationModelRuntime(
                 db=db,
                 settings=resolved_settings,
                 metrics=application_metrics,
+                redis=redis.client,
             )
             app.state.recommendations = RecommendationService(
                 db=db,
@@ -111,6 +118,7 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
                 resolved_settings,
                 CustomerToolFactory(app.state.products, app.state.orders),
                 metrics=application_metrics,
+                redis=redis.client,
             )
             app.state.customer_agent = customer_agent
             yield
@@ -123,6 +131,7 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
             if http_client:
                 await http_client.aclose()
             await db.close()
+            await redis.close()
 
     application = FastAPI(
         title="Food Ordering API",

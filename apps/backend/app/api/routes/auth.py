@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import secrets
-from datetime import timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -9,9 +8,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.api.dependencies import CurrentUserDependency, get_settings, get_user_service
 from app.core.config import Settings
-from app.core.security import TokenError, TokenType, create_token, decode_token
+from app.core.security import TokenError, TokenType, decode_token
 from app.domain.users import CurrentUser
 from app.integrations.line import LineOAuthClient, LineUpstreamError
+from app.services.auth_sessions import AuthSessionService
 from app.services.oauth import OAuthStateService
 from app.services.users import UserService
 
@@ -92,13 +92,6 @@ async def line_login_callback(
         picture_url=claims.get("picture"),
         email=claims.get("email"),
     )
-    access_token = create_token(
-        subject=user.id,
-        token_type=TokenType.ACCESS,
-        settings=settings,
-        lifetime=timedelta(minutes=settings.access_token_ttl_minutes),
-    )
-
     if state_data.get("origin") == "chat":
         chat_user_id = state_data.get("chatUserId")
         if isinstance(chat_user_id, str):
@@ -108,6 +101,8 @@ async def line_login_callback(
             )
         return HTMLResponse("<h2>Login successful. You can return to LINE.</h2>")
 
+    sessions: AuthSessionService = request.app.state.auth_sessions
+    access_token, refresh_token = await sessions.issue(user.id)
     response = RedirectResponse(
         url=f"{str(settings.frontend_url).rstrip('/')}/callback",
         status_code=status.HTTP_302_FOUND,
@@ -121,6 +116,60 @@ async def line_login_callback(
         samesite="lax",
         path="/",
     )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        max_age=settings.refresh_token_ttl_days * 24 * 60 * 60,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/api/v1/auth",
+    )
+    return response
+
+
+@router.post("/auth/refresh", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+async def refresh(
+    request: Request,
+    response: Response,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token required"
+        )
+    sessions: AuthSessionService = request.app.state.auth_sessions
+    try:
+        tokens = await sessions.rotate(refresh_token)
+    except TokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        ) from exc
+    if tokens is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token expired or revoked",
+        )
+    access_token, rotated_refresh_token = tokens
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        max_age=settings.access_token_ttl_minutes * 60,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=rotated_refresh_token,
+        max_age=settings.refresh_token_ttl_days * 24 * 60 * 60,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/api/v1/auth",
+    )
     return response
 
 
@@ -130,14 +179,31 @@ async def line_login_callback(
     response_class=Response,
 )
 async def logout(
-    response: Response, settings: Annotated[Settings, Depends(get_settings)]
+    request: Request, response: Response, settings: Annotated[Settings, Depends(get_settings)]
 ) -> Response:
+    access_token = request.cookies.get("access_token")
+    if access_token:
+        try:
+            claims = decode_token(
+                access_token, expected_type=TokenType.ACCESS, settings=settings
+            )
+            sessions: AuthSessionService = request.app.state.auth_sessions
+            await sessions.revoke(claims)
+        except TokenError:
+            pass
     response.delete_cookie(
         "access_token",
         httponly=True,
         secure=settings.cookie_secure,
         samesite="lax",
         path="/",
+    )
+    response.delete_cookie(
+        "refresh_token",
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/api/v1/auth",
     )
     response.status_code = status.HTTP_204_NO_CONTENT
     return response

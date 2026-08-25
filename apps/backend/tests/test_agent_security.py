@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from bson import ObjectId
+from fakes import FakeRedis
 
 from app.domain.orders import (
     OrderItemResponse,
@@ -90,6 +90,7 @@ def service_with_model(settings, model: ScriptedModel, *, products=None, orders=
     service = CustomerAgentService(
         settings,
         CustomerToolFactory(products, orders),
+        redis=FakeRedis(),
     )
     service.model = model
     return service, products, orders
@@ -129,7 +130,7 @@ async def test_mutation_requires_exact_out_of_model_confirmation(settings) -> No
 
     assert "พิมพ์ “ยืนยัน”" in confirmation
     orders.create.assert_not_awaited()
-    assert service.memory.get(identity.id) == []
+    assert await service.memory.get(identity.id) == []
 
     injected_confirmation = await service.chat(
         identity=identity,
@@ -152,7 +153,7 @@ async def test_mutation_requires_exact_out_of_model_confirmation(settings) -> No
     assert orders.create.await_args.kwargs["user_id"] == identity.id
     assert orders.create.await_args.kwargs["idempotency_key"] == "original-request-key"
     assert len(model.calls) == 1
-    assert service.memory.get(identity.id) == []
+    assert await service.memory.get(identity.id) == []
 
 
 @pytest.mark.asyncio
@@ -313,17 +314,12 @@ async def test_per_user_llm_rate_limit_is_enforced_before_second_model_call(sett
     assert len(model.calls) == 1
 
 
-def test_pending_confirmation_expires() -> None:
-    store = PendingActionStore(ttl_minutes=5)
-    action = store.put(
+async def test_pending_confirmation_round_trip() -> None:
+    store = PendingActionStore(FakeRedis(), ttl_minutes=5)
+    action = await store.put(
         user_id="customer-id",
         tool_name="create_own_order",
         arguments={"items": []},
         idempotency_key="pending-key",
     )
-    store.entries["customer-id"] = replace(
-        action,
-        expires_at=datetime.now(UTC) - timedelta(seconds=1),
-    )
-
-    assert store.get("customer-id") is None
+    assert await store.get("customer-id") == action

@@ -29,11 +29,13 @@ class Settings(BaseSettings):
     mongodb_users_database: str = "Users"
     mongodb_products_database: str = "Products"
     mongodb_orders_database: str = "Orders"
+    redis_url: str = "redis://redis:6379/0"
 
     jwt_secret: SecretStr = Field(min_length=32)
     jwt_issuer: str = "food-ordering-api"
     jwt_audience: str = "food-ordering-web"
     access_token_ttl_minutes: int = Field(default=60, ge=5, le=1440)
+    refresh_token_ttl_days: int = Field(default=7, ge=1, le=30)
     oauth_state_ttl_minutes: int = Field(default=10, ge=2, le=30)
 
     frontend_url: AnyHttpUrl = AnyHttpUrl("http://localhost:3000")
@@ -97,7 +99,6 @@ class Settings(BaseSettings):
     llm_output_cost_per_million: float = Field(default=0, ge=0)
     llm_cache_enabled: bool = False
     llm_cache_ttl_seconds: int = Field(default=60, ge=1, le=3600)
-    llm_cache_max_entries: int = Field(default=200, ge=10, le=10_000)
 
     recommender_enabled: bool = False
     recommender_url: AnyHttpUrl | None = None

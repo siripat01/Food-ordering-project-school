@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
-from collections import OrderedDict
 from dataclasses import dataclass
 
 from bson import BSON
 from pymongo.errors import PyMongoError
+from redis.asyncio import Redis
 
 from app.core.config import Settings
 from app.core.observability import ApplicationMetrics
@@ -32,12 +33,6 @@ class RuntimeRecommendation:
     model_version: str
 
 
-@dataclass(frozen=True, slots=True)
-class _CachedResult:
-    value: RuntimeRecommendation
-    expires_at: float
-
-
 class RecommendationModelRuntime:
     """Loads immutable CPU artifacts and serves bounded personalized rankings."""
 
@@ -47,15 +42,16 @@ class RecommendationModelRuntime:
         db: MongoDatabase,
         settings: Settings,
         metrics: ApplicationMetrics | None = None,
+        redis: Redis,
     ) -> None:
         self.db = db
         self.settings = settings
         self.metrics = metrics
+        self.redis = redis
         self._model: CPUModelBuildResult | None = None
         self._last_model_poll = 0.0
         self._has_polled = False
         self._model_lock = asyncio.Lock()
-        self._results: OrderedDict[tuple[str, str, str, int], _CachedResult] = OrderedDict()
 
     async def recommend(
         self,
@@ -74,7 +70,7 @@ class RecommendationModelRuntime:
             profile = ()
         algorithm = self._algorithm(user_ref=user_ref, has_profile=bool(profile))
         key = (user_ref, model.version, algorithm, limit)
-        cached = self._cached_result(key)
+        cached = await self._cached_result(key)
         if cached is not None:
             if self.metrics:
                 self.metrics.record_recommendation_cache(cache="result", outcome="hit")
@@ -96,13 +92,18 @@ class RecommendationModelRuntime:
             strategy=algorithm,
             model_version=model.version,
         )
-        self._results[key] = _CachedResult(
-            value=result,
-            expires_at=time.monotonic() + self.settings.recommendation_result_cache_ttl_seconds,
+        await self.redis.set(
+            self._result_key(key),
+            json.dumps(
+                {
+                    "productIds": product_ids,
+                    "strategy": algorithm,
+                    "modelVersion": model.version,
+                },
+                separators=(",", ":"),
+            ),
+            ex=self.settings.recommendation_result_cache_ttl_seconds,
         )
-        self._results.move_to_end(key)
-        while len(self._results) > self.settings.recommendation_result_cache_max_entries:
-            self._results.popitem(last=False)
         return result
 
     def _algorithm(self, *, user_ref: str, has_profile: bool) -> RecommendationAlgorithm:
@@ -113,21 +114,40 @@ class RecommendationModelRuntime:
             return "item_item"
         return "trending"
 
-    def evict_user(self, user_ref: str) -> None:
+    async def evict_user(self, user_ref: str) -> None:
         """Remove all short-lived personalized results for one pseudonymous user."""
-        keys = [key for key in self._results if key[0] == user_ref]
-        for key in keys:
-            self._results.pop(key, None)
+        pattern = f"recommendation:result:{user_ref}:*"
+        keys = [key async for key in self.redis.scan_iter(match=pattern)]
+        if keys:
+            await self.redis.delete(*keys)
 
-    def _cached_result(self, key: tuple[str, str, str, int]) -> RuntimeRecommendation | None:
-        cached = self._results.get(key)
-        if cached is None:
+    @staticmethod
+    def _result_key(key: tuple[str, str, str, int]) -> str:
+        user_ref, version, algorithm, limit = key
+        return f"recommendation:result:{user_ref}:{version}:{algorithm}:{limit}"
+
+    async def _cached_result(
+        self, key: tuple[str, str, str, int]
+    ) -> RuntimeRecommendation | None:
+        raw = await self.redis.get(self._result_key(key))
+        if raw is None:
             return None
-        if cached.expires_at <= time.monotonic():
-            self._results.pop(key, None)
+        try:
+            value = json.loads(raw)
+            product_ids = value["productIds"]
+            strategy = value["strategy"]
+            model_version = value["modelVersion"]
+            if not (
+                isinstance(product_ids, list)
+                and all(isinstance(product_id, str) for product_id in product_ids)
+                and strategy in {"trending", "item_item"}
+                and isinstance(model_version, str)
+            ):
+                raise ValueError
+            return RuntimeRecommendation(tuple(product_ids), strategy, model_version)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            await self.redis.delete(self._result_key(key))
             return None
-        self._results.move_to_end(key)
-        return cached.value
 
     async def _active_model(self) -> CPUModelBuildResult | None:
         now_monotonic = time.monotonic()
@@ -154,7 +174,6 @@ class RecommendationModelRuntime:
                 version = state.get("modelVersion") if state else None
                 if not isinstance(version, str):
                     self._model = None
-                    self._results.clear()
                     if self.metrics:
                         self.metrics.record_recommendation_cache(
                             cache="artifact", outcome="miss"
@@ -185,7 +204,6 @@ class RecommendationModelRuntime:
                 logger.warning("recommendation_active_model_rejected")
                 return self._model
             self._model = loaded
-            self._results.clear()
             if self.metrics:
                 self.metrics.record_recommendation_cache(cache="artifact", outcome="miss")
                 self.metrics.set_recommendation_model_age(

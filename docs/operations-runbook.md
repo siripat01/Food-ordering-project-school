@@ -22,7 +22,7 @@ This runbook covers configuration, deployment, health checks, observability, mig
 | --- | --- |
 | Core | `APP_ENV`, `MONGODB_URI`, `JWT_SECRET`, `RECOMMENDATION_USER_REF_SECRET` |
 | Public URLs | `FRONTEND_URL`, `BACKEND_URL`, `CORS_ORIGINS`, `COOKIE_SECURE` |
-| Logging, metrics, SSE | `LOG_LEVEL`, `LOG_JSON`, `METRICS_ENABLED`, `SSE_*` |
+| Redis, logging, metrics, SSE | `REDIS_URL`, `LOG_LEVEL`, `LOG_JSON`, `METRICS_ENABLED`, `SSE_*` |
 | LINE | `LINE_ENABLED`, channel credentials, login credentials, `LINE_REDIRECT_URI` |
 | LLM | `LLM_ENABLED`, `LLM_API_KEY`, base URL, model tiers, routing, limits, cache, cost inputs |
 | Recommender | Provider mode/URL, dedicated pseudonym key, retention/caps, rollout, artifact/cache/profile bounds |
@@ -229,5 +229,4 @@ Keep `RECOMMENDATION_ITEM_ITEM_ROLLOUT_PERCENT=0` while shadow-building. Increas
 - The post-LiteLLM backend and frontend images passed an isolated local Docker Compose rebuild and smoke test on 2026-08-22.
 - GitHub Actions backend, frontend, and container jobs passed for Phase 3 commit `e5bd195` on 2026-08-23.
 - LINE OAuth and webhook behavior still require a real sandbox end-to-end test.
-- Metrics are process-local, and agent memory/cache is not shared across replicas.
-- SSE fan-out and recommendation caches are process-local. Recommendation replicas converge through the shared active-model pointer in MongoDB.
+- Metrics and SSE fan-out remain process-local. Agent memory, confirmations, rate limits, authentication session state, and recommendation result caches are Redis-backed.

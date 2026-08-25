@@ -10,7 +10,7 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 
 ## Implemented capabilities
 
-- LINE OAuth with a single-use, expiring state, nonce validation, and an HttpOnly session cookie
+- LINE OAuth with a single-use, expiring state, nonce validation, and HttpOnly access/refresh cookies
 - Three application roles: `customer`, `staff`, and `admin`
 - Customer-owned order creation, reading, and eligible cancellation
 - Staff order queue and validated operational status transitions
@@ -21,9 +21,9 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 - Atomic status changes, status history, order idempotency, and LINE webhook deduplication
 - Role-scoped AI tool factories; the customer toolset has no staff or admin operations
 - Deterministic confirmation for AI-triggered order creation/cancellation, minimized tool DTOs, and per-user LLM rate limits
-- Bounded, expiring in-memory LLM conversation context and async model calls
+- Redis-backed, bounded, expiring LLM conversation context, confirmations, rate limits, and recommendation-result cache
 - Feature flags for LINE, LLM, and the external recommender
-- In-process LiteLLM complexity/cost routing, independent fallbacks, and safe opt-in caching
+- In-process LiteLLM complexity/cost routing, independent fallbacks, and safe opt-in Redis caching
 - Structured redacted JSON logs and Prometheus request, order, and LLM metrics
 - Slate-validated recommendation events, CPU-only trending/item-item artifacts, controlled rollout/rollback, and temporal Recall@K/NDCG@K evaluation
 - Explicit CORS allowlist, request IDs, liveness, readiness, and non-root containers
@@ -65,6 +65,7 @@ flowchart LR
     Agent --> Gateway[In-process LiteLLM router]
     Gateway -->|Economical/capable tiers and fallbacks| LLM[Configured LLM provider]
     Auth --> Mongo[(MongoDB)]
+    Auth --> Redis[(Redis)]
     Products --> Mongo
     Orders --> Mongo
     Orders -->|Committed status event| SSE[Staff SSE stream]
@@ -139,8 +140,10 @@ docker compose up --build
 | `APP_ENV` | No | `development`, `test`, or `production` |
 | `MONGODB_URI` | Yes | MongoDB URI; no source fallback exists |
 | `MONGODB_*_DATABASE` | No | Existing database names for backward compatibility |
+| `REDIS_URL` | Yes in deployment | Redis endpoint for ephemeral shared state and sessions |
 | `JWT_SECRET` | Yes | JWT signing secret, minimum 32 characters |
 | `JWT_ISSUER`, `JWT_AUDIENCE` | No | JWT validation boundaries |
+| `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS` | No | Access-token and rotating refresh-token lifetimes |
 | `FRONTEND_URL`, `BACKEND_URL` | Yes in deployment | Canonical public URLs |
 | `CORS_ORIGINS` | Yes | JSON array containing explicit origins |
 | `COOKIE_SECURE` | Yes in production | Must be `true` in production |
@@ -279,7 +282,7 @@ Production deployment files:
 
 - MongoDB database names remain configurable and default to the legacy `Users`, `Products`, and `Orders` databases to allow a safe incremental migration.
 - Money is calculated with `Decimal` and stored as MongoDB `Decimal128`; legacy numeric values are normalized at the boundary.
-- AI memory is bounded in-process and expires. This avoids storing chat PII but is not shared across replicas.
+- AI memory is bounded in Redis and expires. This limits retained chat PII while keeping the state consistent across backend replicas.
 - HttpOnly cookies are used for the browser, while Bearer tokens remain supported for non-browser API clients.
 - Physical deletion is avoided for products and users; operational state is preserved for auditability.
 - Recommendation events store a keyed pseudonymous user reference rather than the MongoDB user ID. Offline time-decayed trending and item-item co-occurrence run on bounded CPU workloads and produce immutable MongoDB artifacts; no GPU, vector database, or separate service is required.
@@ -288,12 +291,11 @@ Production deployment files:
 
 - GitHub Actions passed backend, frontend, and container jobs for Phase 3 commit `e5bd195` on 2026-08-23; future changes must keep the same gates green.
 - OAuth/webhook behavior requires real LINE sandbox credentials for end-to-end verification.
-- In-memory agent context is per process and is intentionally lost on restart.
-- Pending AI confirmations and per-user LLM rate limits are process-local; production currently runs one backend replica. Multi-replica deployment requires a shared bounded store before scaling out.
+- Redis stores only token/session state and a SHA-256 digest of each refresh token, never raw refresh tokens. Access tokens and refresh tokens are rotated/revoked through Redis-backed session state.
 - LiteLLM response caching is local to one process and intentionally disabled for customer-agent calls.
 - SSE fan-out is process-local; a multi-replica deployment requires a shared event transport or single-replica queue affinity.
 - Personalized item-item serving defaults to a `0%` rollout until an operator reviews temporal Recall/NDCG, coverage, artifact bounds, and activation-gate output.
-- Recommendation artifact/result caches are process-local; each backend replica polls the same active MongoDB pointer and retains deterministic recent-catalog fallback behavior.
+- Recommendation artifacts remain immutable process-local runtime objects; short-lived personalized result cache entries are shared through Redis.
 - The copied frontend history is not yet merged into the backend repository's commit graph; the original frontend repository is retained outside this monorepo working tree until a history-preserving merge is explicitly authorized.
 
 ## Roadmap

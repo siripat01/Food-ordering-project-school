@@ -162,7 +162,9 @@ async def test_installed_litellm_router_can_be_constructed(
 ) -> None:
     monkeypatch.setenv("LITELLM_MODE", "PRODUCTION")
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "true")
-    gateway = LiteLLMGateway(gateway_settings())
+    settings = gateway_settings()
+    settings.llm_cache_enabled = False
+    gateway = LiteLLMGateway(settings)
 
     assert gateway.router is not None
     strategy = gateway.router.complexity_routers["ordering-assistant"][0].strategy

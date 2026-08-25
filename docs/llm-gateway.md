@@ -1,4 +1,4 @@
-# In-Process LiteLLM Gateway
+# LiteLLM Gateway
 
 ## Design
 
@@ -55,7 +55,7 @@ LLM_CACHE_TTL_SECONDS=60
 LLM_CACHE_MAX_ENTRIES=200
 ```
 
-The cache is exact-match, bounded, in-process, and cleared on restart. It is not shared across replicas.
+The optional cache is exact-match, bounded by TTL, and Redis-backed through `REDIS_URL`. It is shared across replicas; customer-agent requests still always use `no-store`.
 
 Customer-agent calls always send `no-store`, even when the gateway cache is enabled. Agent responses can contain tool calls or order-specific context; caching them could replay side effects, return stale order state, or retain personal data. Cache use must be explicitly enabled only for public, read-only, non-personalized completions. Do not enable semantic caching or add a vector database without a demonstrated use case and a separate privacy review.
 

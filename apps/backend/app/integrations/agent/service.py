@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections import deque
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable
 from time import perf_counter
-from typing import Any
+from typing import Any, cast
+
+from redis.asyncio import Redis
 
 from app.core.config import Settings
 from app.core.observability import ApplicationMetrics
@@ -51,37 +51,43 @@ def visible_model_text(value: Any) -> str:
     return _HIDDEN_REASONING_BLOCK.sub("", content).strip()
 
 
-@dataclass(slots=True)
-class MemoryEntry:
-    messages: deque[tuple[str, str]]
-    touched_at: datetime
-
-
 class BoundedMemoryStore:
-    def __init__(self, *, max_messages: int, ttl_minutes: int) -> None:
+    """Redis-backed bounded conversational history."""
+
+    def __init__(self, redis: Redis, *, max_messages: int, ttl_minutes: int) -> None:
+        self.redis = redis
         self.max_messages = max_messages
-        self.ttl = timedelta(minutes=ttl_minutes)
-        self.entries: dict[str, MemoryEntry] = {}
+        self.ttl_seconds = ttl_minutes * 60
 
-    def get(self, user_id: str) -> list[tuple[str, str]]:
-        now = datetime.now(UTC)
-        self.entries = {
-            key: entry
-            for key, entry in self.entries.items()
-            if now - entry.touched_at <= self.ttl
-        }
-        entry = self.entries.get(user_id)
-        if entry is None:
-            entry = MemoryEntry(deque(maxlen=self.max_messages), now)
-            self.entries[user_id] = entry
-        entry.touched_at = now
-        return list(entry.messages)
+    @staticmethod
+    def _key(user_id: str) -> str:
+        return f"agent:memory:{user_id}"
 
-    def append(self, user_id: str, role: str, content: str) -> None:
-        self.get(user_id)
-        entry = self.entries[user_id]
-        entry.messages.append((role, content[:4000]))
-        entry.touched_at = datetime.now(UTC)
+    async def get(self, user_id: str) -> list[tuple[str, str]]:
+        values = await cast(
+            Awaitable[list[Any]],
+            self.redis.lrange(self._key(user_id), 0, self.max_messages - 1),
+        )
+        if values:
+            await self.redis.expire(self._key(user_id), self.ttl_seconds)
+        history: list[tuple[str, str]] = []
+        for value in reversed(values):
+            try:
+                role, content = json.loads(value)
+                if role in {"user", "assistant"} and isinstance(content, str):
+                    history.append((role, content))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return history
+
+    async def append(self, user_id: str, role: str, content: str) -> None:
+        key = self._key(user_id)
+        await cast(
+            Awaitable[Any],
+            self.redis.lpush(key, json.dumps([role, content[:4000]], separators=(",", ":"))),
+        )
+        await cast(Awaitable[Any], self.redis.ltrim(key, 0, self.max_messages - 1))
+        await self.redis.expire(key, self.ttl_seconds)
 
 
 class CustomerAgentService:
@@ -91,19 +97,21 @@ class CustomerAgentService:
         tools: CustomerToolFactory,
         *,
         metrics: ApplicationMetrics | None = None,
+        redis: Redis,
     ) -> None:
         self.settings = settings
         self.tool_factory = tools
         self.metrics = metrics
         self.memory = BoundedMemoryStore(
+            redis,
             max_messages=settings.llm_memory_messages,
             ttl_minutes=settings.llm_memory_ttl_minutes,
         )
         self.pending_actions = PendingActionStore(
-            ttl_minutes=settings.llm_confirmation_ttl_minutes
+            redis, ttl_minutes=settings.llm_confirmation_ttl_minutes
         )
         self.rate_limiter = PerUserRateLimiter(
-            requests_per_minute=settings.llm_requests_per_minute
+            redis, requests_per_minute=settings.llm_requests_per_minute
         )
         self.model: Any = None
         if settings.llm_enabled:
@@ -227,14 +235,14 @@ class CustomerAgentService:
     ) -> str:
         if self.model is None:
             return "ขออภัย ระบบผู้ช่วยสั่งอาหารยังไม่เปิดใช้งานในขณะนี้"
-        if not self.rate_limiter.allow(identity.id):
+        if not await self.rate_limiter.allow(identity.id):
             return "ส่งคำขอถี่เกินไป กรุณารอสักครู่แล้วลองใหม่"
 
         command = normalized_command(message)
-        pending_action = self.pending_actions.get(identity.id)
+        pending_action = await self.pending_actions.get(identity.id)
         if pending_action is not None:
             if command in CONFIRMATION_COMMANDS:
-                confirmed = self.pending_actions.consume(identity.id)
+                confirmed = await self.pending_actions.consume(identity.id)
                 if confirmed is None:
                     return "รายการยืนยันหมดอายุแล้ว กรุณาเริ่มใหม่อีกครั้ง"
                 return await self._execute_pending_action(
@@ -242,7 +250,7 @@ class CustomerAgentService:
                     action=confirmed,
                 )
             if command in CANCELLATION_COMMANDS:
-                self.pending_actions.clear(identity.id)
+                await self.pending_actions.clear(identity.id)
                 return "ยกเลิกรายการที่รอยืนยันแล้ว"
             return self._confirmation_message(pending_action)
 
@@ -257,7 +265,7 @@ class CustomerAgentService:
         tools = self._to_langchain_tools(scoped)
         tool_by_name = {tool.name: tool for tool in tools}
         scoped_by_name = {tool.name: tool for tool in scoped}
-        history = self.memory.get(identity.id)
+        history = await self.memory.get(identity.id)
         messages: list[Any] = [SystemMessage(content=CUSTOMER_SYSTEM_PROMPT)]
         for role, content in history:
             history_message = (
@@ -291,7 +299,7 @@ class CustomerAgentService:
                         try:
                             arguments = scoped_tool.validated_arguments(call.get("args", {}))
                             if scoped_tool.requires_confirmation:
-                                pending = self.pending_actions.put(
+                                pending = await self.pending_actions.put(
                                     user_id=identity.id,
                                     tool_name=tool.name,
                                     arguments=arguments,
@@ -343,8 +351,8 @@ class CustomerAgentService:
             },
         )
         if not mutation_pending:
-            self.memory.append(identity.id, "user", message)
-            self.memory.append(identity.id, "assistant", final_text)
+            await self.memory.append(identity.id, "user", message)
+            await self.memory.append(identity.id, "assistant", final_text)
         return final_text[:5000]
 
     async def close(self) -> None:

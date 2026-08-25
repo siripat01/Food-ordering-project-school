@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fakes import FakeRedis
 
 from app.core.observability import ApplicationMetrics, JsonLogFormatter
 from app.integrations.agent.service import CustomerAgentService
@@ -72,6 +73,7 @@ async def test_llm_token_and_cost_metrics_are_recorded(settings) -> None:
         settings,
         SimpleNamespace(build=lambda **_kwargs: []),
         metrics=metrics,
+        redis=FakeRedis(),
     )
     service.model = FakeModel()
     identity = SimpleNamespace(id="customer-id")
