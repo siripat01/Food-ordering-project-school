@@ -68,7 +68,6 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
             app.state.orders = services.orders
             app.state.outbox = services.outbox
             app.state.oauth_states = services.oauth_states
-            app.state.webhooks = services.webhooks
             app.state.line_oauth = services.line_oauth
             app.state.line_bot = services.line_bot
             yield
