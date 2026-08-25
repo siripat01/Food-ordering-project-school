@@ -240,11 +240,15 @@ same command more than once, but every command carries the stable key:
 line:<LINE webhook event id>
 ```
 
-`agent.process` claims that key in `job_idempotency` before running. Duplicate
-deliveries therefore return without re-running the LLM turn, while failed runs
-release the claim so Taskiq can retry.
+`agent.process` first checks whether that key already has a successful-completion
+marker in `job_idempotency`. It writes the marker only after the whole handler
+succeeds. A failed run or hard worker crash therefore leaves no completion marker
+and remains retryable; a later duplicate after successful completion is skipped.
 
-This chooses duplicate-safe delivery over silent loss.
+Two truly concurrent duplicates can both begin before either writes the completion
+marker. That is acceptable under at-least-once delivery: destructive agent tools
+receive the same stable business idempotency key and must enforce idempotency at
+the mutation boundary. This chooses duplicate-safe execution over silent loss.
 
 ## Correlation IDs
 
@@ -272,6 +276,7 @@ bodies are not logged.
 | Dispatcher crashes after claim | Lease expires and event becomes reclaimable |
 | Stale dispatcher resumes | Fencing token prevents stale status overwrite |
 | Repeated dispatcher crashes | Attempt budget eventually parks event as dead |
+| Agent worker crashes before completion | No completion marker; Taskiq/redelivery may retry |
 | Task handler raises | Taskiq retry middleware handles the task |
 | Unknown outbox event | Event is parked as dead and remains inspectable |
 
@@ -284,7 +289,10 @@ python -m app.jobs.dispatcher
 ```
 
 Docker Compose runs these as separate `backend`, `worker`, and `dispatcher`
-services. Worker and dispatcher do not expose public ports.
+services. Worker and dispatcher do not expose public ports. Because they do not
+serve HTTP, their Compose healthchecks override the backend image's HTTP
+healthcheck with process-liveness checks so `docker compose up --wait` can verify
+all runtimes correctly.
 
 Useful outbox queries:
 
