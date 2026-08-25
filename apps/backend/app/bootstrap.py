@@ -30,7 +30,6 @@ from app.services.products import ProductService
 from app.services.recommendation_runtime import RecommendationModelRuntime
 from app.services.recommendations import RecommendationService
 from app.services.users import UserService
-from app.services.webhooks import WebhookEventService
 
 PushMessages = Callable[[str, list[dict[str, Any]], str | None], Awaitable[None]]
 ReplyMessages = Callable[[str, list[dict[str, Any]], str | None], Awaitable[None]]
@@ -59,7 +58,6 @@ class ApiServices:
     outbox: OutboxService
     orders: OrderService
     oauth_states: OAuthStateService
-    webhooks: WebhookEventService
     line_oauth: LineOAuthClient
 
 
@@ -170,7 +168,6 @@ async def build_api_services(
             outbox=outbox,
         )
         oauth_states = OAuthStateService(db, settings)
-        webhooks = WebhookEventService(db)
         line_oauth = LineOAuthClient(settings, http_client)
 
         return ApiServices(
@@ -188,7 +185,6 @@ async def build_api_services(
             outbox=outbox,
             orders=orders,
             oauth_states=oauth_states,
-            webhooks=webhooks,
             line_oauth=line_oauth,
         )
     except Exception:
