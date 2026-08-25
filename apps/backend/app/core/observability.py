@@ -39,10 +39,24 @@ def reset_request_id(token: Token[str | None]) -> None:
     _request_id.reset(token)
 
 
+def current_request_id() -> str | None:
+    """Return the active request/trace identifier.
+
+    This is the project's single correlation concept. Background tasks rebind it
+    with :func:`set_request_id` so one logical request stays traceable from the
+    HTTP layer through the outbox and into the worker.
+    """
+    return _request_id.get()
+
+
 class JsonLogFormatter(logging.Formatter):
     _extra_fields = {
+        "attempt": "attempt",
+        "correlation_id": "correlationId",
         "duration_ms": "durationMs",
         "error_type": "errorType",
+        "event_id": "eventId",
+        "event_type": "eventType",
         "http_method": "httpMethod",
         "http_route": "httpRoute",
         "http_status": "httpStatus",
@@ -52,6 +66,9 @@ class JsonLogFormatter(logging.Formatter):
         "order_id": "orderId",
         "order_status": "orderStatus",
         "output_tokens": "outputTokens",
+        "queue_name": "queueName",
+        "task_id": "taskId",
+        "task_name": "taskName",
         "upstream_status": "upstreamStatus",
     }
 

@@ -124,6 +124,37 @@ The frontend and API should be smoke-tested through their public ingress after d
 
 The staff stream uses `text/event-stream`. Disable proxy buffering for `/api/v1/staff/orders/stream`, preserve long-lived connections, and set an idle timeout longer than `SSE_HEARTBEAT_SECONDS`. SSE fan-out is process-local; keep one backend replica for this portfolio deployment unless a shared event transport is deliberately introduced.
 
+## Background job runtimes
+
+The deployment runs three backend processes from the same image:
+
+| Service | Command | Notes |
+| --- | --- | --- |
+| `backend` | `uvicorn app.main:app` (image default) | Only service reachable through the tunnel |
+| `worker` | `taskiq worker app.core.taskiq:broker` | No published or exposed ports |
+| `dispatcher` | `python -m app.jobs.dispatcher` | Run one replica; claims are atomic so extras are safe but useless |
+
+All three share `deploy/backend.env`; do not duplicate secrets per service.
+
+`MONGODB_URI` must point at a replica set (MongoDB Atlas already is one).
+Without it the transactional outbox falls back to a non-atomic dual write and
+logs `mongodb_transactions_unavailable` at startup. Treat that warning in
+production as a configuration defect.
+
+If the worker is stopped, LINE assistant replies and order notifications queue
+in Redis and are delivered when it returns. If the dispatcher is stopped,
+outbox events accumulate as `pending` and are dispatched on restart; nothing is
+lost. Check for stuck work with:
+
+```javascript
+db.outbox_events.countDocuments({status: {$in: ["pending", "failed"]}})
+db.outbox_events.find({status: "dead"}).sort({createdAt: -1}).limit(20)
+```
+
+Delivery is at-least-once, so duplicate execution is possible and is suppressed
+by idempotency keys rather than prevented. See
+[Background Jobs and Outbox](background-jobs.md).
+
 ## Logs and metrics
 
 The backend emits structured JSON logs by default. Use `X-Request-ID` to correlate a client report with the request log. Order lifecycle logs also include an order ID.
@@ -138,10 +169,10 @@ See the [Observability Runbook](observability.md) for the metric list and redact
 2. Run the complete CI boundary against the exact revision.
 3. Select the immutable backend digest produced by the successful CI run.
 4. Apply backend, Compose, tunnel-token, and Vercel environment configuration.
-5. Pull and start the backend and tunnel without publishing the backend port.
+5. Pull and start the backend, worker, dispatcher, and tunnel without publishing the backend port.
 6. Wait for readiness through the public tunnel and inspect startup logs.
 7. Deploy the frontend from `apps/frontend` on Vercel with the correct public API build variable.
-8. Smoke-test public products, login if enabled, an isolated test order, staff transition, logs, and metrics.
+8. Smoke-test public products, login if enabled, an isolated test order, staff transition, logs, and metrics. Confirm the test order's outbox event reaches `sent` and the worker logged the matching task.
 9. Shift traffic gradually where the platform supports it.
 10. Record the deployed revision, image digests, configuration version, and verification result without recording secret values.
 
@@ -230,3 +261,5 @@ Keep `RECOMMENDATION_ITEM_ITEM_ROLLOUT_PERCENT=0` while shadow-building. Increas
 - GitHub Actions backend, frontend, and container jobs passed for Phase 3 commit `e5bd195` on 2026-08-23.
 - LINE OAuth and webhook behavior still require a real sandbox end-to-end test.
 - Metrics and SSE fan-out remain process-local. Agent memory, confirmations, rate limits, authentication session state, and recommendation result caches are Redis-backed.
+- LINE assistant replies and order notifications now require a running Taskiq worker; the API only enqueues them.
+- The transactional outbox requires a MongoDB replica set. A standalone deployment degrades to a documented non-atomic fallback and is not production-suitable.

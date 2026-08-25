@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 from redis.asyncio import Redis
@@ -113,15 +112,12 @@ return 1
         self.limit = requests_per_minute
 
     async def allow(self, user_id: str) -> bool:
-        allowed = await cast(
-            Awaitable[Any],
-            self.redis.eval(
-                self._ALLOW_SCRIPT,
-                1,
-                f"agent:rate-limit:{user_id}",
-                str(datetime.now(UTC).timestamp()),
-                str(self.limit),
-                uuid4().hex,
-            ),
+        allowed = await self.redis.eval(
+            self._ALLOW_SCRIPT,
+            1,
+            f"agent:rate-limit:{user_id}",
+            str(datetime.now(UTC).timestamp()),
+            str(self.limit),
+            uuid4().hex,
         )
         return bool(allowed)

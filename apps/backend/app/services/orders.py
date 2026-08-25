@@ -7,9 +7,10 @@ from typing import Any
 
 from bson import ObjectId
 from pymongo import ReturnDocument
+from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
-from app.core.observability import ApplicationMetrics
+from app.core.observability import ApplicationMetrics, current_request_id
 from app.db.mongodb import MongoDatabase
 from app.domain.common import normalize_money, parse_object_id, serialize_mongo, utc_now
 from app.domain.errors import ConflictError, InvalidInputError, NotFoundError
@@ -24,9 +25,11 @@ from app.domain.orders import (
     OrderStatus,
     StatusHistoryEntry,
 )
+from app.domain.outbox import OutboxEventType
 from app.domain.products import ProductStatus
 from app.domain.users import Role
 from app.services.order_updates import OrderUpdateDispatcher
+from app.services.outbox import OutboxService
 from app.services.products import ProductService
 
 logger = logging.getLogger(__name__)
@@ -39,10 +42,44 @@ class OrderService:
         *,
         metrics: ApplicationMetrics | None = None,
         updates: OrderUpdateDispatcher | None = None,
+        outbox: OutboxService | None = None,
     ) -> None:
         self.db = db
         self.metrics = metrics
         self.updates = updates
+        self.outbox = outbox
+
+    @staticmethod
+    def _event_payload(order: OrderResponse) -> dict[str, Any]:
+        """Keep outbox payloads to identifiers and small facts, never whole documents."""
+        return {
+            "orderId": order.id,
+            "userId": order.user_id,
+            "status": order.status.value,
+        }
+
+    async def _save_status_event(
+        self,
+        order: OrderResponse,
+        *,
+        session: AsyncClientSession | None,
+        correlation_id: str | None,
+    ) -> None:
+        """Record an ``order.status_changed`` fact inside the caller's transaction.
+
+        A status is reachable at most once per order because transitions are
+        one-way, so the status itself makes a stable idempotency key.
+        """
+        if self.outbox is None:
+            return
+        event_type = OutboxEventType.ORDER_STATUS_CHANGED.value
+        await self.outbox.save_event(
+            event_type=event_type,
+            payload=self._event_payload(order),
+            session=session,
+            correlation_id=correlation_id,
+            idempotency_key=f"{event_type}:{order.id}:{order.status.value}",
+        )
 
     @staticmethod
     def _aware(value: datetime | None, fallback: datetime) -> datetime:
@@ -220,8 +257,10 @@ class OrderService:
             )
         subtotal = normalize_money(subtotal)
         now = utc_now()
+        order_object_id = ObjectId()
         doc = serialize_mongo(
             {
+                "_id": order_object_id,
                 "userId": user_id,
                 "items": order_items,
                 "subtotal": subtotal,
@@ -241,8 +280,21 @@ class OrderService:
                 "schemaVersion": 2,
             }
         )
+        order = self.to_response(doc)
+        correlation_id = current_request_id()
         try:
-            result = await self.db.orders.insert_one(doc)
+            if self.outbox is None:
+                await self.db.orders.insert_one(doc)
+            else:
+                async with self.db.transaction() as session:
+                    await self.db.orders.insert_one(doc, session=session)
+                    await self.outbox.save_event(
+                        event_type=OutboxEventType.ORDER_CREATED.value,
+                        payload=self._event_payload(order),
+                        session=session,
+                        correlation_id=correlation_id,
+                        idempotency_key=f"{OutboxEventType.ORDER_CREATED.value}:{order.id}",
+                    )
         except DuplicateKeyError:
             existing = await self.db.orders.find_one(
                 {"userId": user_id, "idempotencyKey": idempotency_key}
@@ -250,13 +302,15 @@ class OrderService:
             if existing is None:
                 raise ConflictError("Duplicate order request") from None
             return self.to_response(existing), False
-        doc["_id"] = result.inserted_id
-        order = self.to_response(doc)
         if self.metrics:
             self.metrics.record_order_created(order.total)
         logger.info(
             "order_created",
-            extra={"order_id": order.id, "order_status": order.status.value},
+            extra={
+                "correlation_id": correlation_id,
+                "order_id": order.id,
+                "order_status": order.status.value,
+            },
         )
         if self.updates:
             self.updates.publish(order)
@@ -310,36 +364,56 @@ class OrderService:
     async def cancel_own(self, *, order_id: str, user_id: str) -> OrderResponse:
         object_id = parse_object_id(order_id)
         now = utc_now()
-        doc = await self.db.orders.find_one_and_update(
-            {
-                "_id": object_id,
-                "userId": user_id,
-                "status": {"$in": [OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value]},
+        query = {
+            "_id": object_id,
+            "userId": user_id,
+            "status": {"$in": [OrderStatus.PENDING.value, OrderStatus.CONFIRMED.value]},
+        }
+        update = {
+            "$set": {
+                "status": OrderStatus.CANCELLED.value,
+                "updatedAt": now,
+                "cancelledAt": now,
             },
-            {
-                "$set": {
+            "$push": {
+                "statusHistory": {
                     "status": OrderStatus.CANCELLED.value,
-                    "updatedAt": now,
-                    "cancelledAt": now,
-                },
-                "$push": {
-                    "statusHistory": {
-                        "status": OrderStatus.CANCELLED.value,
-                        "changedAt": now,
-                        "actorId": user_id,
-                        "actorRole": Role.CUSTOMER.value,
-                    }
-                },
+                    "changedAt": now,
+                    "actorId": user_id,
+                    "actorRole": Role.CUSTOMER.value,
+                }
             },
-            return_document=ReturnDocument.AFTER,
-        )
+        }
+        correlation_id = current_request_id()
+        if self.outbox is None:
+            doc = await self.db.orders.find_one_and_update(
+                query, update, return_document=ReturnDocument.AFTER
+            )
+        else:
+            async with self.db.transaction() as session:
+                doc = await self.db.orders.find_one_and_update(
+                    query,
+                    update,
+                    return_document=ReturnDocument.AFTER,
+                    session=session,
+                )
+                if doc is not None:
+                    await self._save_status_event(
+                        self.to_response(doc),
+                        session=session,
+                        correlation_id=correlation_id,
+                    )
         if doc:
             order = self.to_response(doc)
             if self.metrics:
                 self.metrics.record_order_status(order.status.value)
             logger.info(
                 "order_status_changed",
-                extra={"order_id": order.id, "order_status": order.status.value},
+                extra={
+                    "correlation_id": correlation_id,
+                    "order_id": order.id,
+                    "order_status": order.status.value,
+                },
             )
             if self.updates:
                 self.updates.publish(order)
@@ -375,21 +449,37 @@ class OrderService:
             set_fields["completedAt"] = now
         if new_status is OrderStatus.CANCELLED:
             set_fields["cancelledAt"] = now
-        doc = await self.db.orders.find_one_and_update(
-            {"_id": object_id, "status": existing.get("status")},
-            {
-                "$set": set_fields,
-                "$push": {
-                    "statusHistory": {
-                        "status": new_status.value,
-                        "changedAt": now,
-                        "actorId": actor_id,
-                        "actorRole": actor_role.value,
-                    }
-                },
+        query = {"_id": object_id, "status": existing.get("status")}
+        update = {
+            "$set": set_fields,
+            "$push": {
+                "statusHistory": {
+                    "status": new_status.value,
+                    "changedAt": now,
+                    "actorId": actor_id,
+                    "actorRole": actor_role.value,
+                }
             },
-            return_document=ReturnDocument.AFTER,
-        )
+        }
+        correlation_id = current_request_id()
+        if self.outbox is None:
+            doc = await self.db.orders.find_one_and_update(
+                query, update, return_document=ReturnDocument.AFTER
+            )
+        else:
+            async with self.db.transaction() as session:
+                doc = await self.db.orders.find_one_and_update(
+                    query,
+                    update,
+                    return_document=ReturnDocument.AFTER,
+                    session=session,
+                )
+                if doc is not None:
+                    await self._save_status_event(
+                        self.to_response(doc),
+                        session=session,
+                        correlation_id=correlation_id,
+                    )
         if doc is None:
             raise ConflictError("Order status changed concurrently; retry the request")
         order = self.to_response(doc)
@@ -397,7 +487,11 @@ class OrderService:
             self.metrics.record_order_status(order.status.value)
         logger.info(
             "order_status_changed",
-            extra={"order_id": order.id, "order_status": order.status.value},
+            extra={
+                "correlation_id": correlation_id,
+                "order_id": order.id,
+                "order_status": order.status.value,
+            },
         )
         if self.updates:
             self.updates.publish(order)

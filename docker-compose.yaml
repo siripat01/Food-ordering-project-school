@@ -2,12 +2,24 @@ services:
   mongo:
     image: mongo:7.0.14-jammy
     restart: unless-stopped
+    # A single-node replica set, because the transactional outbox needs
+    # multi-document transactions. A standalone mongod cannot provide them.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { rs.status().ok }
+          catch (error) {
+            rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}).ok
+          }
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 20
 
   redis:
@@ -28,6 +40,58 @@ services:
     env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
     ports:
       - "8000:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./apps/backend
+    command: ["taskiq", "worker", "app.core.taskiq:broker"]
+    env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
+    restart: unless-stopped
+    # Not published: the worker consumes from Redis and has no inbound surface,
+    # so readiness means "can reach the queue", not "serves HTTP".
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import redis; from app.core.config import get_settings;
+          redis.Redis.from_url(get_settings().redis_url).ping()
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dispatcher:
+    build:
+      context: ./apps/backend
+    command: ["python", "-m", "app.jobs.dispatcher"]
+    env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
+    restart: unless-stopped
+    # The dispatcher polls MongoDB, so that is what readiness checks.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import pymongo; from app.core.config import get_settings;
+          pymongo.MongoClient(get_settings().mongodb_uri.get_secret_value(),
+          serverSelectionTimeoutMS=3000).admin.command("ping")
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       mongo:
         condition: service_healthy

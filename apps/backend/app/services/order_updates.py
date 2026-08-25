@@ -5,12 +5,12 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 from uuid import uuid4
 
 from app.core.config import Settings
 from app.domain.common import utc_now
 from app.domain.orders import OrderResponse, OrderStatus
-from app.integrations.line import LineBotClient
 from app.services.recommendations import RecommendationService
 from app.services.users import UserService
 
@@ -56,6 +56,13 @@ class OrderEventBroker:
 
 
 class LineOrderStatusNotifier:
+    """Decides which committed order changes deserve a LINE message, and what it says.
+
+    Delivery itself is not done here. The ``order.update_status`` task enqueues
+    ``line.push`` with the messages this class builds, so a LINE outage becomes a
+    retryable job instead of a lost notification.
+    """
+
     NOTIFIABLE_STATUSES = frozenset(
         {
             OrderStatus.CONFIRMED,
@@ -72,61 +79,57 @@ class LineOrderStatusNotifier:
         OrderStatus.COMPLETED: "ออเดอร์เสร็จสมบูรณ์แล้ว",
         OrderStatus.CANCELLED: "ออเดอร์ถูกยกเลิกแล้ว",
     }
+    CREATED_MESSAGE = "รับออเดอร์แล้ว กำลังรอร้านยืนยัน"
 
     def __init__(
         self,
         *,
         settings: Settings,
         users: UserService,
-        line_bot: LineBotClient,
     ) -> None:
         self.settings = settings
         self.users = users
-        self.line_bot = line_bot
 
-    async def notify(self, order: OrderResponse) -> None:
-        if not self.settings.line_enabled or order.status not in self.NOTIFIABLE_STATUSES:
-            return
-        line_user_id = await self.users.get_line_user_id(order.user_id)
-        if line_user_id is None:
-            return
-        message = self.STATUS_MESSAGES[order.status]
-        try:
-            await self.line_bot.push_text(
-                line_user_id=line_user_id,
-                text=f"{message}\nOrder #{order.id[-8:].upper()}",
-            )
-        except Exception:
-            logger.warning(
-                "line_order_status_notification_failed",
-                extra={"order_id": order.id, "order_status": order.status.value},
-            )
+    @staticmethod
+    def _reference(order: OrderResponse) -> str:
+        return f"Order #{order.id[-8:].upper()}"
+
+    async def resolve_recipient(self, order: OrderResponse) -> str | None:
+        """Return the customer's LINE identity, from trusted server state only."""
+        if not self.settings.line_enabled:
+            return None
+        return await self.users.get_line_user_id(order.user_id)
+
+    def build_status_messages(self, order: OrderResponse) -> list[dict[str, Any]]:
+        if order.status not in self.NOTIFIABLE_STATUSES:
+            return []
+        headline = self.STATUS_MESSAGES[order.status]
+        return [{"type": "text", "text": f"{headline}\n{self._reference(order)}"}]
+
+    def build_created_messages(self, order: OrderResponse) -> list[dict[str, Any]]:
+        return [{"type": "text", "text": f"{self.CREATED_MESSAGE}\n{self._reference(order)}"}]
 
 
 class OrderUpdateDispatcher:
-    """Publishes committed order changes and owns background notification tasks."""
+    """Publishes committed order changes to in-process consumers.
+
+    Only work that must stay inside the API process lives here: the SSE fan-out
+    is per-process by nature. Anything that has to survive a crash goes through
+    the transactional outbox instead.
+    """
 
     def __init__(
         self,
         *,
         broker: OrderEventBroker,
-        notifier: LineOrderStatusNotifier,
         recommendations: RecommendationService,
     ) -> None:
         self.broker = broker
-        self.notifier = notifier
         self.recommendations = recommendations
         self._tasks: set[asyncio.Task[None]] = set()
 
     def publish(self, order: OrderResponse) -> None:
         self.broker.publish(order)
-        if order.status in self.notifier.NOTIFIABLE_STATUSES:
-            task = asyncio.create_task(
-                self.notifier.notify(order),
-                name=f"line-order-notification-{order.id}",
-            )
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
         if order.status is OrderStatus.COMPLETED:
             task = asyncio.create_task(
                 self._record_purchase_safely(order),

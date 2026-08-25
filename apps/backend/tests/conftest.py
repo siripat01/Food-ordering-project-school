@@ -10,6 +10,13 @@ os.environ.setdefault(
     "RECOMMENDATION_USER_REF_SECRET",
     "test-recommendation-ref-secret-0123456789abcdef",
 )
+# The Taskiq broker is a module-level singleton built from the process
+# environment, because `taskiq worker app.core.taskiq:broker` resolves it by
+# import path. Point it at the same Redis the integration tests use.
+os.environ.setdefault(
+    "REDIS_URL",
+    os.getenv("TEST_REDIS_URL", "redis://localhost:6379/0"),
+)
 
 
 @pytest.fixture

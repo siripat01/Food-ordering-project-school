@@ -10,6 +10,7 @@ This directory contains the operational and engineering documentation for the Fo
 | [API Guide](api-guide.md) | API consumers and testers | Endpoint and role matrix, authentication, idempotency, examples, and error behavior |
 | [Operations Runbook](operations-runbook.md) | Deployers and operators | Configuration, deployment, health checks, migration, rollback, and troubleshooting |
 | [LLM Gateway](llm-gateway.md) | AI/backend engineers | LiteLLM complexity routing, DeepSeek configuration, fallback, and cache safety |
+| [Background Jobs and Outbox](background-jobs.md) | Backend engineers and operators | Taskiq worker, transactional outbox, dispatcher, retries, idempotency, and delivery guarantees |
 | [Observability Runbook](observability.md) | Operators and backend engineers | Structured logs, Prometheus metrics, redaction, and operational checks |
 | [CPU Recommendation Plan](recommendation-system-plan.md) | Backend and recommendation engineers | Hardened event attribution, materialized trending, item-item ranking, evaluation, and rollout |
 | [Credential Incident Runbook](security-incident-response.md) | Repository owner and security responder | Required external credential rotation and optional coordinated history cleanup |
@@ -21,6 +22,7 @@ This directory contains the operational and engineering documentation for the Fo
 - Calling the API: [API Guide](api-guide.md)
 - Preparing a deployment: [Operations Runbook](operations-runbook.md)
 - Configuring DeepSeek: [LLM Gateway](llm-gateway.md)
+- Running the worker and outbox dispatcher: [Background Jobs and Outbox](background-jobs.md)
 - Responding to the historical MongoDB credential incident: [Credential Incident Runbook](security-incident-response.md)
 
 ## Implementation status

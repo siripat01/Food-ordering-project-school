@@ -43,6 +43,80 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  worker:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to an immutable GHCR image tag or digest}
+    pull_policy: always
+    command: ["taskiq", "worker", "app.core.taskiq:broker"]
+    env_file:
+      - ${BACKEND_ENV_FILE:-./deploy/backend.env}
+    restart: unless-stopped
+    init: true
+    # No expose/ports: the worker only consumes from Redis.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import redis; from app.core.config import get_settings;
+          redis.Redis.from_url(get_settings().redis_url).ping()
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - private
+    depends_on:
+      redis:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  dispatcher:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to an immutable GHCR image tag or digest}
+    pull_policy: always
+    command: ["python", "-m", "app.jobs.dispatcher"]
+    env_file:
+      - ${BACKEND_ENV_FILE:-./deploy/backend.env}
+    restart: unless-stopped
+    init: true
+    # Run exactly one replica per deployment. Extra replicas are safe (claims
+    # are atomic) but add no throughput.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import pymongo; from app.core.config import get_settings;
+          pymongo.MongoClient(get_settings().mongodb_uri.get_secret_value(),
+          serverSelectionTimeoutMS=3000).admin.command("ping")
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - private
+    depends_on:
+      redis:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   cloudflared:
     image: cloudflare/cloudflared:2026.8.2
     pull_policy: always

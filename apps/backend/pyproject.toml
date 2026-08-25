@@ -11,6 +11,10 @@ line-length = 96
 select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
 ignore = ["S101"]
 
+[tool.ruff.lint.flake8-bugbear]
+# TaskiqDepends is a dependency marker, like fastapi.Depends, not a live call.
+extend-immutable-calls = ["taskiq.TaskiqDepends"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S106"]
 

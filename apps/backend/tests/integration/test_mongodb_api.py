@@ -175,6 +175,24 @@ async def test_real_mongodb_order_flow_is_isolated_and_idempotent(
     assert stored_event["strategy"] == recommendations.json()["strategy"]
     assert "weight" not in stored_event
     assert "eventId" not in stored_event
+    # The committed order carries exactly one order.created fact, and the
+    # idempotent replay above did not produce a second one.
+    assert await db.outbox_events.count_documents({}) == 1
+    outbox_event = await db.outbox_events.find_one({})
+    assert outbox_event is not None
+    assert outbox_event["eventType"] == "order.created"
+    assert outbox_event["status"] == "pending"
+    assert outbox_event["attempts"] == 0
+    assert outbox_event["payload"]["orderId"] == first.json()["id"]
+    assert outbox_event["idempotencyKey"] == f"order.created:{first.json()['id']}"
+    assert outbox_event["correlationId"] == first.headers["X-Request-ID"]
+    outbox_indexes = await db.outbox_events.index_information()
+    assert "outbox_claimable" in outbox_indexes
+    assert "uniq_outbox_idempotency" in outbox_indexes
+    assert outbox_indexes["ttl_outbox_published"]["expireAfterSeconds"] == 604_800
+    job_indexes = await db.job_idempotency.index_information()
+    assert "uniq_job_idempotency" in job_indexes
+
     order_indexes = await db.orders.index_information()
     oauth_indexes = await db.oauth_states.index_information()
     recommendation_indexes = await db.recommendation_events.index_information()
