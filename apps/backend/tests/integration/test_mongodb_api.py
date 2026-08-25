@@ -31,6 +31,7 @@ async def real_mongodb_app() -> AsyncIterator[tuple[FastAPI, Settings]]:
         _env_file=None,
         app_env="test",
         mongodb_uri=mongodb_uri,
+        redis_url=os.getenv("TEST_REDIS_URL", "redis://localhost:6379/0"),
         mongodb_users_database=f"test_users_{suffix}",
         mongodb_products_database=f"test_products_{suffix}",
         mongodb_orders_database=f"test_orders_{suffix}",
