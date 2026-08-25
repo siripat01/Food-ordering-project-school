@@ -7,11 +7,13 @@ The repository is a modular monolith:
 ```text
 apps/backend/app/
 ├── api/             HTTP routes and authenticated dependencies
-├── core/            Settings, security, middleware, logging, and metrics
-├── db/              MongoDB lifecycle and index creation
-├── domain/          Pydantic request/response models and domain rules
+├── core/            Settings, security, middleware, logging, metrics,
+│                    the Taskiq broker, and the shared service container
+├── db/              MongoDB/Redis lifecycle, transactions, and index creation
+├── domain/          Pydantic models, domain rules, outbox facts, and task names
 ├── integrations/    LINE and the role-scoped LiteLLM/LangChain agent
-└── services/        Product, order, user, OAuth-state, and webhook use cases
+├── jobs/            Taskiq task handlers and the outbox dispatcher
+└── services/        Product, order, user, OAuth-state, webhook, and outbox use cases
 
 apps/frontend/src/app/
 ├── components/      Shared UI components
@@ -21,6 +23,19 @@ apps/frontend/src/app/
 ```
 
 FastAPI owns the application lifecycle. MongoDB, LINE, HTTP, and LLM clients are created after configuration validation and closed during shutdown. Route handlers delegate business rules to services. Authentication and role dependencies run before protected handlers. Prompts are not an authorization boundary.
+
+Three processes share one codebase and one `ServiceContainer`:
+
+| Process | Command | Role |
+| --- | --- | --- |
+| API | `uvicorn app.main:app` | Serves HTTP and enqueues jobs |
+| Worker | `taskiq worker app.core.taskiq:broker` | Runs task handlers from Redis Streams |
+| Dispatcher | `python -m app.jobs.dispatcher` | Turns committed outbox facts into jobs |
+
+Order writes commit their outbox event in the same MongoDB transaction, which
+requires a replica set. `docker compose` runs MongoDB as a single-node replica
+set for this reason, so `MONGODB_URI` must include `?replicaSet=rs0`. See
+[Background Jobs and Outbox](background-jobs.md).
 
 ## Requirements
 
@@ -196,5 +211,6 @@ Before using `--apply`, follow the backup and verification sequence in the [Oper
 - [API Guide](api-guide.md)
 - [Operations Runbook](operations-runbook.md)
 - [LLM Gateway](llm-gateway.md)
+- [Background Jobs and Outbox](background-jobs.md)
 - [Observability Runbook](observability.md)
 - [CPU Recommendation Plan](recommendation-system-plan.md)

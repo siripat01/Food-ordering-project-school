@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -20,10 +19,10 @@ from app.api.routes import (
     staff,
 )
 from app.core.config import Settings, get_settings
+from app.core.container import ServiceContainer
 from app.core.middleware import RequestIDMiddleware
 from app.core.observability import ApplicationMetrics, configure_logging
-from app.db.mongodb import MongoDatabase
-from app.db.redis import RedisDatabase
+from app.core.taskiq import broker
 from app.domain.errors import (
     ConflictError,
     DomainError,
@@ -31,22 +30,6 @@ from app.domain.errors import (
     InvalidInputError,
     NotFoundError,
 )
-from app.integrations.agent.service import CustomerAgentService
-from app.integrations.agent.tools import CustomerToolFactory
-from app.integrations.line import LineBotClient, LineOAuthClient
-from app.services.auth_sessions import AuthSessionService
-from app.services.oauth import OAuthStateService
-from app.services.order_updates import (
-    LineOrderStatusNotifier,
-    OrderEventBroker,
-    OrderUpdateDispatcher,
-)
-from app.services.orders import OrderService
-from app.services.products import ProductService
-from app.services.recommendation_runtime import RecommendationModelRuntime
-from app.services.recommendations import RecommendationService
-from app.services.users import UserService
-from app.services.webhooks import WebhookEventService
 
 
 def create_app(settings: Settings | None = None, *, initialize_clients: bool = True) -> FastAPI:
@@ -59,79 +42,35 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
         if not initialize_clients:
             yield
             return
-        db = MongoDatabase(resolved_settings)
-        redis = RedisDatabase(resolved_settings)
-        http_client: httpx.AsyncClient | None = None
-        line_bot = LineBotClient(resolved_settings)
-        customer_agent: CustomerAgentService | None = None
-        order_updates: OrderUpdateDispatcher | None = None
+        container = ServiceContainer(resolved_settings, metrics=application_metrics)
         try:
-            await db.connect()
-            await redis.connect()
-            http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(resolved_settings.llm_timeout_seconds)
-            )
-            await line_bot.start()
-
-            app.state.db = db
-            app.state.redis = redis.client
-            app.state.http_client = http_client
-            app.state.users = UserService(db)
-            app.state.auth_sessions = AuthSessionService(redis.client, resolved_settings)
-            app.state.products = ProductService(db)
-            app.state.recommendation_runtime = RecommendationModelRuntime(
-                db=db,
-                settings=resolved_settings,
-                metrics=application_metrics,
-                redis=redis.client,
-            )
-            app.state.recommendations = RecommendationService(
-                db=db,
-                products=app.state.products,
-                settings=resolved_settings,
-                http_client=http_client,
-                metrics=application_metrics,
-                runtime=app.state.recommendation_runtime,
-            )
-            app.state.order_events = OrderEventBroker(
-                queue_size=resolved_settings.sse_subscriber_queue_size
-            )
-            order_updates = OrderUpdateDispatcher(
-                broker=app.state.order_events,
-                notifier=LineOrderStatusNotifier(
-                    settings=resolved_settings,
-                    users=app.state.users,
-                    line_bot=line_bot,
-                ),
-                recommendations=app.state.recommendations,
-            )
-            app.state.orders = OrderService(
-                db,
-                metrics=application_metrics,
-                updates=order_updates,
-            )
-            app.state.oauth_states = OAuthStateService(db, resolved_settings)
-            app.state.webhooks = WebhookEventService(db)
-            app.state.line_oauth = LineOAuthClient(resolved_settings, http_client)
-            app.state.line_bot = line_bot
-            customer_agent = CustomerAgentService(
-                resolved_settings,
-                CustomerToolFactory(app.state.products, app.state.orders),
-                metrics=application_metrics,
-                redis=redis.client,
-            )
-            app.state.customer_agent = customer_agent
+            await container.start()
+            # The API is a Taskiq *client*: it enqueues work but never consumes
+            # it. The worker and the outbox dispatcher run as separate processes
+            # so no polling loop is started per Uvicorn worker.
+            await broker.startup()
+            app.state.container = container
+            app.state.db = container.db
+            app.state.redis = container.redis.client
+            app.state.http_client = container.http_client
+            app.state.users = container.users
+            app.state.auth_sessions = container.auth_sessions
+            app.state.products = container.products
+            app.state.recommendation_runtime = container.recommendation_runtime
+            app.state.recommendations = container.recommendations
+            app.state.order_events = container.order_events
+            app.state.orders = container.orders
+            app.state.outbox = container.outbox
+            app.state.oauth_states = container.oauth_states
+            app.state.webhooks = container.webhooks
+            app.state.line_oauth = container.line_oauth
+            app.state.line_bot = container.line_bot
+            app.state.customer_agent = container.customer_agent
+            app.state.line_chat = container.line_chat
             yield
         finally:
-            if customer_agent:
-                await customer_agent.close()
-            if order_updates:
-                await order_updates.close()
-            await line_bot.close()
-            if http_client:
-                await http_client.aclose()
-            await db.close()
-            await redis.close()
+            await broker.shutdown()
+            await container.close()
 
     application = FastAPI(
         title="Food Ordering API",

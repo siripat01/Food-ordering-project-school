@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
+from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.asynchronous.collection import AsyncCollection
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -14,6 +20,7 @@ class MongoDatabase:
     settings: Settings
     client: AsyncMongoClient[dict[str, Any]] | None = None
     ready: bool = False
+    transactions_supported: bool = field(default=False, init=False)
 
     async def connect(self) -> None:
         self.client = AsyncMongoClient(
@@ -23,8 +30,41 @@ class MongoDatabase:
             appname="food-ordering-api",
         )
         await self.client.admin.command("ping")
+        await self._detect_transaction_support()
         await self.ensure_indexes()
         self.ready = True
+
+    async def _detect_transaction_support(self) -> None:
+        """Multi-document transactions require a replica set or a sharded cluster.
+
+        A standalone ``mongod`` silently rejects them, so the transactional
+        outbox degrades to a documented non-atomic fallback instead of failing
+        startup. See ``docs/background-jobs.md``.
+        """
+        hello = await self._require_client().admin.command("hello")
+        self.transactions_supported = (
+            bool(hello.get("setName")) or hello.get("msg") == "isdbgrid"
+        )
+        if not self.transactions_supported:
+            logger.warning(
+                "mongodb_transactions_unavailable",
+                extra={"error_type": "StandaloneDeployment"},
+            )
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[AsyncClientSession | None]:
+        """Yield a transactional session, or ``None`` on a standalone deployment.
+
+        Callers must pass the yielded session to every write that has to commit
+        together. When ``None`` is yielded the writes are *not* atomic; that
+        limitation is deliberate and documented rather than hidden.
+        """
+        if not self.transactions_supported:
+            yield None
+            return
+        async with self._require_client().start_session() as session:
+            async with await session.start_transaction():
+                yield session
 
     async def close(self) -> None:
         self.ready = False
@@ -100,6 +140,14 @@ class MongoDatabase:
         return self._require_client()[self.settings.mongodb_orders_database][
             "recommendation_model_locks"
         ]
+
+    @property
+    def outbox_events(self) -> AsyncCollection[dict[str, Any]]:
+        return self._require_client()[self.settings.mongodb_orders_database]["outbox_events"]
+
+    @property
+    def job_idempotency(self) -> AsyncCollection[dict[str, Any]]:
+        return self._require_client()[self.settings.mongodb_orders_database]["job_idempotency"]
 
     @staticmethod
     async def _ensure_ttl_index(
@@ -266,6 +314,33 @@ class MongoDatabase:
             field="expiresAt",
             expire_after_seconds=0,
             name="ttl_recommendation_model_lock",
+        )
+        await self.outbox_events.create_index(
+            [("status", ASCENDING), ("availableAt", ASCENDING)],
+            name="outbox_claimable",
+        )
+        await self.outbox_events.create_index(
+            [("idempotencyKey", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"idempotencyKey": {"$type": "string"}},
+            name="uniq_outbox_idempotency",
+        )
+        await self._ensure_ttl_index(
+            self.outbox_events,
+            field="publishedAt",
+            expire_after_seconds=604_800,
+            name="ttl_outbox_published",
+        )
+        await self.job_idempotency.create_index(
+            [("scope", ASCENDING), ("key", ASCENDING)],
+            unique=True,
+            name="uniq_job_idempotency",
+        )
+        await self._ensure_ttl_index(
+            self.job_idempotency,
+            field="expiresAt",
+            expire_after_seconds=0,
+            name="ttl_job_idempotency",
         )
 
     async def ping(self) -> bool:

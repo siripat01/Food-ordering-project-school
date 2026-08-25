@@ -54,33 +54,41 @@ async def test_order_event_broker_fans_out_latest_bounded_event() -> None:
 async def test_line_notifier_uses_internal_line_identity_only_for_status_updates() -> None:
     users = AsyncMock()
     users.get_line_user_id.return_value = "line-recipient"
-    line_bot = AsyncMock()
     notifier = LineOrderStatusNotifier(
         settings=SimpleNamespace(line_enabled=True),
         users=users,
-        line_bot=line_bot,
     )
 
-    await notifier.notify(order(OrderStatus.PENDING))
-    line_bot.push_text.assert_not_awaited()
+    assert notifier.build_status_messages(order(OrderStatus.PENDING)) == []
 
     confirmed = order(OrderStatus.CONFIRMED)
-    await notifier.notify(confirmed)
+    messages = notifier.build_status_messages(confirmed)
+    recipient = await notifier.resolve_recipient(confirmed)
 
     users.get_line_user_id.assert_awaited_once_with(confirmed.user_id)
-    line_bot.push_text.assert_awaited_once()
-    assert line_bot.push_text.await_args.kwargs["line_user_id"] == "line-recipient"
+    assert recipient == "line-recipient"
+    assert messages[0]["type"] == "text"
+    assert notifier.STATUS_MESSAGES[OrderStatus.CONFIRMED] in messages[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_line_notifier_returns_no_recipient_when_line_is_disabled() -> None:
+    users = AsyncMock()
+    notifier = LineOrderStatusNotifier(
+        settings=SimpleNamespace(line_enabled=False),
+        users=users,
+    )
+
+    assert await notifier.resolve_recipient(order(OrderStatus.CONFIRMED)) is None
+    users.get_line_user_id.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_dispatcher_records_completed_purchase_after_committed_update() -> None:
     broker = OrderEventBroker(queue_size=10)
-    notifier = AsyncMock()
-    notifier.NOTIFIABLE_STATUSES = LineOrderStatusNotifier.NOTIFIABLE_STATUSES
     recommendations = AsyncMock()
     dispatcher = OrderUpdateDispatcher(
         broker=broker,
-        notifier=notifier,
         recommendations=recommendations,
     )
     completed = order(OrderStatus.COMPLETED)
@@ -88,7 +96,6 @@ async def test_dispatcher_records_completed_purchase_after_committed_update() ->
     dispatcher.publish(completed)
     await dispatcher.close()
 
-    notifier.notify.assert_awaited_once_with(completed)
     recommendations.record_purchase.assert_awaited_once_with(completed)
 
 

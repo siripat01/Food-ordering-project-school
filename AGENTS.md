@@ -10,12 +10,13 @@ Communicate progress and explanations to the user in Thai. Keep code, identifier
 
 - `apps/backend`: FastAPI application, domain services, MongoDB lifecycle, LINE integration, and role-scoped agent tools.
 - `apps/frontend`: Next.js customer and staff application.
-- `docker-compose.yaml`: Local MongoDB, backend, and frontend stack.
+- `docker-compose.yaml`: Local MongoDB (single-node replica set), Redis, backend, Taskiq worker, outbox dispatcher, and frontend stack.
 - `.env.example`: Placeholder-only configuration reference. Never put real credentials in it.
 - `docs/README.md`: Documentation index for users, developers, API consumers, and operators.
 - `docs/user-guide.md`: Implemented customer, staff, admin, web, and LINE flows.
 - `docs/developer-guide.md`: Architecture, local setup, quality checks, and safe change workflow.
 - `docs/api-guide.md`: Endpoint/RBAC matrix, request examples, idempotency, and error behavior.
+- `docs/background-jobs.md`: Taskiq worker, transactional outbox, dispatcher, retries, and idempotency.
 - `docs/operations-runbook.md`: Deployment, health, migration, rollback, and troubleshooting.
 - `docs/security-incident-response.md`: Credential rotation and optional history-cleanup runbook.
 - `README.md`: Implemented architecture, role model, setup, migration, and roadmap.
@@ -24,7 +25,10 @@ The old backend files were intentionally moved or replaced during the monorepo r
 
 ## Non-negotiable constraints
 
-- Keep the backend as a modular monolith. Do not introduce microservices, Kubernetes, Kafka, a vector database, or another framework without a demonstrated requirement.
+- Keep the backend as a modular monolith. Do not introduce microservices, Kubernetes, Kafka, a vector database, or another framework without a demonstrated requirement. Background work uses Taskiq on Redis Streams with a MongoDB transactional outbox; do not add Celery, RabbitMQ, event sourcing, or custom distributed locks.
+- Keep outbox events (facts, past tense: `order.created`) and tasks (commands, imperative: `order.process`) distinct. Task handlers in `app/jobs/` stay thin and delegate to services; the outbox dispatcher stays infrastructure; repositories never import Taskiq.
+- Write an outbox event in the same MongoDB transaction as the business state it describes. Transactions require a replica set; the standalone fallback is non-atomic and is not for production.
+- Assume at-least-once delivery. Never claim exactly-once, and keep handlers idempotent.
 - Inspect `git status` before editing and preserve unrelated user changes.
 - Do not commit, push, rotate external credentials, modify MongoDB Atlas, rewrite Git history, or delete the retained frontend repository without explicit authorization.
 - Never print, copy, or repeat secrets. Report only the affected file and credential type.
@@ -121,6 +125,14 @@ cd apps/backend
 .venv/bin/ruff format --check .
 .venv/bin/mypy app
 .venv/bin/pytest -q
+```
+
+Background runtimes (each is a separate process, started by Docker Compose as
+the `worker` and `dispatcher` services):
+
+```bash
+taskiq worker app.core.taskiq:broker   # consumes Redis Streams, runs task handlers
+python -m app.jobs.dispatcher          # polls the outbox, enqueues tasks
 ```
 
 Frontend and container checks:

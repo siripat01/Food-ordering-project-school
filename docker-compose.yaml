@@ -2,12 +2,24 @@ services:
   mongo:
     image: mongo:7.0.14-jammy
     restart: unless-stopped
+    # A single-node replica set, because the transactional outbox needs
+    # multi-document transactions. A standalone mongod cannot provide them.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { rs.status().ok }
+          catch (error) {
+            rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}).ok
+          }
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 20
 
   redis:
@@ -28,6 +40,35 @@ services:
     env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
     ports:
       - "8000:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./apps/backend
+    command: ["taskiq", "worker", "app.core.taskiq:broker"]
+    env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
+    restart: unless-stopped
+    # Not published: the worker consumes from Redis and has no inbound surface.
+    healthcheck:
+      disable: true
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dispatcher:
+    build:
+      context: ./apps/backend
+    command: ["python", "-m", "app.jobs.dispatcher"]
+    env_file: ${FOOD_ORDERING_ENV_FILE:-.env}
+    restart: unless-stopped
+    healthcheck:
+      disable: true
     depends_on:
       mongo:
         condition: service_healthy

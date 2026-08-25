@@ -119,14 +119,32 @@ class LineBotClient:
             raise RuntimeError("LINE integration is disabled")
         return cast(list[Any], self.parser.parse(body, signature))
 
-    async def reply_text(self, *, reply_token: str, text: str) -> None:
+    @staticmethod
+    def _to_messages(messages: list[dict[str, Any]]) -> list[TextMessage]:
+        """Convert transport-level message dicts into SDK messages.
+
+        Tasks carry plain dicts because a Taskiq payload must be JSON
+        serializable. Only the text message type is produced today; an unknown
+        type is rejected rather than silently dropped.
+        """
+        converted: list[TextMessage] = []
+        for message in messages:
+            message_type = str(message.get("type", "text"))
+            if message_type != "text":
+                raise LineUpstreamError(f"Unsupported LINE message type: {message_type}")
+            converted.append(TextMessage(text=str(message.get("text", ""))[:5000]))
+        if not converted:
+            raise LineUpstreamError("LINE message list must not be empty")
+        return converted
+
+    async def reply_messages(self, *, reply_token: str, messages: list[dict[str, Any]]) -> None:
         if self.messaging is None:
             raise RuntimeError("LINE integration is disabled")
         try:
             await self.messaging.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[TextMessage(text=text[:5000])],
+                    messages=self._to_messages(messages),
                 )
             )
         except ApiException as exc:
@@ -135,6 +153,12 @@ class LineBotClient:
                 operation="reply",
                 status_code=exc.status if isinstance(exc.status, int) else None,
             ) from None
+
+    async def reply_text(self, *, reply_token: str, text: str) -> None:
+        await self.reply_messages(
+            reply_token=reply_token,
+            messages=[{"type": "text", "text": text}],
+        )
 
     async def show_loading(self, *, chat_id: str, seconds: int = 60) -> None:
         if self.messaging is None:
@@ -153,14 +177,14 @@ class LineBotClient:
                 status_code=exc.status if isinstance(exc.status, int) else None,
             ) from None
 
-    async def push_text(self, *, line_user_id: str, text: str) -> None:
+    async def push_messages(self, *, line_user_id: str, messages: list[dict[str, Any]]) -> None:
         if self.messaging is None:
             raise RuntimeError("LINE integration is disabled")
         try:
             await self.messaging.push_message(
                 PushMessageRequest(
                     to=line_user_id,
-                    messages=[TextMessage(text=text[:5000])],
+                    messages=self._to_messages(messages),
                 )
             )
         except ApiException as exc:
@@ -169,3 +193,9 @@ class LineBotClient:
                 operation="push",
                 status_code=exc.status if isinstance(exc.status, int) else None,
             ) from None
+
+    async def push_text(self, *, line_user_id: str, text: str) -> None:
+        await self.push_messages(
+            line_user_id=line_user_id,
+            messages=[{"type": "text", "text": text}],
+        )

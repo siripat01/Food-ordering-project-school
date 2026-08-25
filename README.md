@@ -38,10 +38,11 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 ├── apps/
 │   ├── backend/              # FastAPI modular monolith
 │   │   ├── app/api/          # HTTP routes and dependencies
-│   │   ├── app/core/         # Settings, JWT, and middleware
-│   │   ├── app/db/           # MongoDB lifecycle and indexes
-│   │   ├── app/domain/       # Validated domain models and rules
+│   │   ├── app/core/         # Settings, JWT, middleware, Taskiq broker, container
+│   │   ├── app/db/           # MongoDB/Redis lifecycle, transactions, indexes
+│   │   ├── app/domain/       # Validated domain models, outbox facts, task names
 │   │   ├── app/integrations/ # LINE and role-scoped AI agent
+│   │   ├── app/jobs/         # Taskiq task handlers and the outbox dispatcher
 │   │   ├── app/services/     # Application services
 │   │   ├── scripts/          # Explicit migration and CPU recommendation jobs
 │   │   └── tests/
@@ -69,13 +70,41 @@ flowchart LR
     Products --> Mongo
     Orders --> Mongo
     Orders -->|Committed status event| SSE[Staff SSE stream]
-    Orders -->|Status notification| LINE
+    Orders -->|Same transaction| Outbox[(Outbox events)]
+    Outbox --> Dispatcher[Outbox dispatcher]
+    Dispatcher -->|order.process / order.update_status| Streams[Redis Streams]
+    API -->|agent.process| Streams
+    Streams --> Worker[Taskiq worker]
+    Worker --> Orders
+    Worker --> Agent
+    Worker -->|line.push / line.reply| LINE
     API --> Recommendations[Recommendation service]
     Recommendations --> Mongo
     API -. feature-flagged .-> Recommender[External recommender]
 ```
 
 The application remains one deployable backend. The modules separate responsibilities without introducing microservices or infrastructure that this project does not need.
+
+### Background jobs and the transactional outbox
+
+Order writes and their outbox events commit in one MongoDB transaction, so a
+committed order can never lose its event. A dedicated dispatcher process turns
+those committed facts into Taskiq commands on Redis Streams, and a dedicated
+worker process executes them:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000   # API
+taskiq worker app.core.taskiq:broker              # Taskiq worker
+python -m app.jobs.dispatcher                     # Outbox dispatcher
+```
+
+Delivery is at-least-once, never exactly-once. Duplicate suppression uses unique
+outbox idempotency keys, a job idempotency collection for the agent task, and
+handlers that re-read state instead of trusting payloads. Docker Compose runs
+`backend`, `worker`, and `dispatcher` as separate services. Multi-document
+transactions require a replica set, so the local MongoDB runs as a single-node
+replica set and `MONGODB_URI` must include `?replicaSet=rs0`. See
+[Background jobs and outbox](docs/background-jobs.md).
 
 ## Security and role model
 
@@ -138,9 +167,9 @@ docker compose up --build
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `APP_ENV` | No | `development`, `test`, or `production` |
-| `MONGODB_URI` | Yes | MongoDB URI; no source fallback exists |
+| `MONGODB_URI` | Yes | MongoDB URI; no source fallback exists. Needs a replica set (for example `?replicaSet=rs0`) for the transactional outbox |
 | `MONGODB_*_DATABASE` | No | Existing database names for backward compatibility |
-| `REDIS_URL` | Yes in deployment | Redis endpoint for ephemeral shared state and sessions |
+| `REDIS_URL` | Yes in deployment | Redis endpoint for ephemeral shared state, sessions, and the Taskiq job streams |
 | `JWT_SECRET` | Yes | JWT signing secret, minimum 32 characters |
 | `JWT_ISSUER`, `JWT_AUDIENCE` | No | JWT validation boundaries |
 | `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS` | No | Access-token and rotating refresh-token lifetimes |
@@ -189,6 +218,7 @@ See [the LLM gateway design](docs/llm-gateway.md) and [the observability runbook
 - [Operations runbook](docs/operations-runbook.md)
 - [LLM gateway](docs/llm-gateway.md)
 - [AI security model](docs/ai-security.md)
+- [Background jobs and outbox](docs/background-jobs.md)
 - [Observability runbook](docs/observability.md)
 - [CPU recommendation-system plan](docs/recommendation-system-plan.md)
 - [Credential incident runbook](docs/security-incident-response.md)

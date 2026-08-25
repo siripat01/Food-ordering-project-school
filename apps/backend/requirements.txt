@@ -8,5 +8,7 @@ prometheus-client==0.26.0
 PyJWT==2.10.1
 pymongo==4.14.1
 python-multipart==0.0.20
-redis==5.2.1
+redis==8.1.0
+taskiq==0.12.5
+taskiq-redis==1.2.3
 uvicorn[standard]==0.35.0

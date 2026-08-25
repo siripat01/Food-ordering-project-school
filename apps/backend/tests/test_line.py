@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 from linebot.v3.messaging.exceptions import ApiException
 
-from app.api.routes.line import process_text_event, process_text_event_safely
 from app.integrations.line import LineBotClient, LineUpstreamError
+from app.services.line_chat import LineChatService
 
 
 @pytest.mark.asyncio
@@ -41,80 +41,105 @@ async def test_line_loading_animation_uses_bounded_duration(settings) -> None:
     assert request.loading_seconds == 60
 
 
+def chat_service(settings, *, users, line_bot, agent, push, reply) -> LineChatService:
+    return LineChatService(
+        settings=settings,
+        users=users,
+        line_bot=line_bot,
+        agent=agent,
+        push_messages=push,
+        reply_messages=reply,
+    )
+
+
 @pytest.mark.asyncio
 async def test_line_loading_failure_does_not_block_agent_response(
+    settings,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    user = SimpleNamespace(id="internal-user-id")
     users = AsyncMock()
-    users.get_by_line_id.return_value = user
+    users.get_by_line_id.return_value = SimpleNamespace(id="internal-user-id")
     line_bot = AsyncMock()
     line_bot.show_loading.side_effect = LineUpstreamError(
         "LINE loading animation failed",
         operation="loading",
         status_code=429,
     )
-    customer_agent = AsyncMock()
-    customer_agent.chat.return_value = "final answer"
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                users=users,
-                line_bot=line_bot,
-                customer_agent=customer_agent,
-            )
-        )
-    )
-    event = SimpleNamespace(
-        source=SimpleNamespace(user_id="line-user-id", type="user"),
-        reply_token="one-time-reply-token",
-        message=SimpleNamespace(text="private customer message"),
+    agent = AsyncMock()
+    agent.chat.return_value = "final answer"
+    push = AsyncMock()
+    service = chat_service(
+        settings, users=users, line_bot=line_bot, agent=agent, push=push, reply=AsyncMock()
     )
 
     with caplog.at_level(logging.WARNING):
-        await process_text_event(request, event, "webhook-event-id")
+        await service.handle_text_message(
+            line_user_id="line-user-id",
+            text="private customer message",
+            reply_token="one-time-reply-token",
+            idempotency_key="line:webhook-event-id",
+        )
 
     assert "line_loading_animation_failed" in caplog.text
-    customer_agent.chat.assert_awaited_once()
-    line_bot.push_text.assert_awaited_once_with(
-        line_user_id="line-user-id",
-        text="final answer",
+    agent.chat.assert_awaited_once()
+    push.assert_awaited_once_with(
+        "line-user-id",
+        [{"type": "text", "text": "final answer"}],
+        None,
     )
 
 
 @pytest.mark.asyncio
-async def test_line_background_delivery_failure_is_bounded(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_line_delivery_is_queued_rather_than_sent_inline(settings) -> None:
+    """A LINE outage must retry the message alone, not re-run the whole LLM turn."""
     users = AsyncMock()
     users.get_by_line_id.return_value = SimpleNamespace(id="internal-user-id")
     line_bot = AsyncMock()
-    line_bot.push_text.side_effect = LineUpstreamError(
-        "LINE push delivery failed",
-        operation="push",
-        status_code=401,
+    agent = AsyncMock()
+    agent.chat.return_value = "final answer"
+    push = AsyncMock()
+    service = chat_service(
+        settings, users=users, line_bot=line_bot, agent=agent, push=push, reply=AsyncMock()
     )
-    customer_agent = AsyncMock()
-    customer_agent.chat.return_value = "final answer"
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                users=users,
-                line_bot=line_bot,
-                customer_agent=customer_agent,
-            )
-        )
-    )
-    event = SimpleNamespace(
-        source=SimpleNamespace(user_id="line-user-id", type="user"),
+
+    await service.handle_text_message(
+        line_user_id="line-user-id",
+        text="private customer message",
         reply_token="one-time-reply-token",
-        message=SimpleNamespace(text="private customer message"),
+        idempotency_key="line:webhook-event-id",
     )
 
-    with caplog.at_level(logging.ERROR):
-        await process_text_event_safely(request, event, "webhook-event-id")
+    line_bot.push_text.assert_not_awaited()
+    line_bot.push_messages.assert_not_awaited()
+    push.assert_awaited_once()
 
-    assert "line_message_delivery_failed" in caplog.text
-    assert "private customer message" not in caplog.text
-    assert "line-user-id" not in caplog.text
-    customer_agent.chat.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_unregistered_line_user_is_replied_to_without_reaching_the_agent(
+    settings,
+) -> None:
+    users = AsyncMock()
+    users.get_by_line_id.return_value = None
+    agent = AsyncMock()
+    reply = AsyncMock()
+    push = AsyncMock()
+    service = chat_service(
+        settings,
+        users=users,
+        line_bot=AsyncMock(),
+        agent=agent,
+        push=push,
+        reply=reply,
+    )
+
+    await service.handle_text_message(
+        line_user_id="line-user-id",
+        text="private customer message",
+        reply_token="one-time-reply-token",
+        idempotency_key="line:webhook-event-id",
+    )
+
+    agent.chat.assert_not_awaited()
+    push.assert_not_awaited()
+    reply.assert_awaited_once()
+    assert "เข้าสู่ระบบ" in reply.await_args.args[1][0]["text"]

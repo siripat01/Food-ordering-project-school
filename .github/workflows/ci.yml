@@ -18,15 +18,6 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     services:
-      mongo:
-        image: mongo:7.0.14-jammy
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok'"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
       redis:
         image: redis:7.4.2-alpine
         ports:
@@ -37,13 +28,31 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     env:
-      TEST_MONGODB_URI: mongodb://localhost:27017
+      TEST_MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0
       TEST_REDIS_URL: redis://localhost:6379/0
     defaults:
       run:
         working-directory: apps/backend
     steps:
       - uses: actions/checkout@v6
+      # A service container cannot start mongod with --replSet, and the
+      # transactional outbox needs multi-document transactions.
+      - name: Start MongoDB as a single-node replica set
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:7.0.14-jammy \
+            mongod --replSet rs0 --bind_ip_all
+          for _ in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval "db.adminCommand('ping').ok" \
+              && break
+            sleep 2
+          done
+          docker exec mongo mongosh --quiet --eval \
+            "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})"
+          for _ in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval \
+              "db.hello().isWritablePrimary" | grep -q true && break
+            sleep 2
+          done
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
