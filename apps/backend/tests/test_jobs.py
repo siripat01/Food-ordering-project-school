@@ -142,9 +142,9 @@ async def test_line_push_task_logs_no_recipient_or_message_content(
 
 
 @pytest.mark.asyncio
-async def test_agent_task_delegates_to_the_chat_service() -> None:
+async def test_agent_task_marks_completion_after_success() -> None:
     services = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
-    services.idempotency.claim.return_value = True
+    services.idempotency.is_completed.return_value = False
 
     await process_agent_message.original_func(
         "line-user",
@@ -155,7 +155,7 @@ async def test_agent_task_delegates_to_the_chat_service() -> None:
         context=context(services),
     )
 
-    services.idempotency.claim.assert_awaited_once_with(
+    services.idempotency.is_completed.assert_awaited_once_with(
         scope=IDEMPOTENCY_SCOPE, key="line:event-1"
     )
     services.line_chat.handle_text_message.assert_awaited_once_with(
@@ -166,12 +166,15 @@ async def test_agent_task_delegates_to_the_chat_service() -> None:
         correlation_id="request-1",
         show_loading=True,
     )
+    services.idempotency.mark_completed.assert_awaited_once_with(
+        scope=IDEMPOTENCY_SCOPE, key="line:event-1"
+    )
 
 
 @pytest.mark.asyncio
-async def test_duplicate_agent_delivery_is_skipped() -> None:
+async def test_completed_agent_delivery_is_skipped() -> None:
     services = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
-    services.idempotency.claim.return_value = False
+    services.idempotency.is_completed.return_value = True
 
     await process_agent_message.original_func(
         "line-user",
@@ -181,12 +184,13 @@ async def test_duplicate_agent_delivery_is_skipped() -> None:
     )
 
     services.line_chat.handle_text_message.assert_not_awaited()
+    services.idempotency.mark_completed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_failed_agent_run_releases_its_idempotency_claim_for_retry() -> None:
+async def test_failed_agent_run_does_not_mark_completion() -> None:
     services = SimpleNamespace(line_chat=AsyncMock(), idempotency=AsyncMock())
-    services.idempotency.claim.return_value = True
+    services.idempotency.is_completed.return_value = False
     services.line_chat.handle_text_message.side_effect = RuntimeError("llm down")
 
     with pytest.raises(RuntimeError):
@@ -197,6 +201,4 @@ async def test_failed_agent_run_releases_its_idempotency_claim_for_retry() -> No
             context=context(services),
         )
 
-    services.idempotency.release.assert_awaited_once_with(
-        scope=IDEMPOTENCY_SCOPE, key="line:event-1"
-    )
+    services.idempotency.mark_completed.assert_not_awaited()
