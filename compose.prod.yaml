@@ -51,14 +51,19 @@ services:
       - ${BACKEND_ENV_FILE:-./deploy/backend.env}
     restart: unless-stopped
     init: true
-    # No expose/ports: the worker only consumes from Redis. Override the API
-    # image healthcheck with process liveness for this runtime.
+    # No expose/ports: the worker only consumes from Redis.
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
-      interval: 10s
-      timeout: 3s
-      start_period: 10s
-      retries: 3
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import redis; from app.core.config import get_settings;
+          redis.Redis.from_url(get_settings().redis_url).ping()
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - private
     depends_on:
@@ -82,15 +87,21 @@ services:
       - ${BACKEND_ENV_FILE:-./deploy/backend.env}
     restart: unless-stopped
     init: true
-    # Run exactly one replica per deployment. Extra replicas are safe because
-    # claims are atomic and fenced, but add no throughput. Override the API image
-    # healthcheck with process liveness for this runtime.
+    # Run exactly one replica per deployment. Extra replicas are safe (claims
+    # are atomic) but add no throughput.
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
-      interval: 10s
-      timeout: 3s
-      start_period: 10s
-      retries: 3
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import pymongo; from app.core.config import get_settings;
+          pymongo.MongoClient(get_settings().mongodb_uri.get_secret_value(),
+          serverSelectionTimeoutMS=3000).admin.command("ping")
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - private
     depends_on:
