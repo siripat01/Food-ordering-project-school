@@ -26,3 +26,33 @@ async def test_refresh_rotation_revokes_the_previous_access_token(settings) -> N
     assert await sessions.access_is_active(new_access_claims)
     assert await sessions.rotate(refresh) is None
     assert await sessions.rotate(new_refresh) is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_is_not_consumed_when_session_state_is_missing(settings) -> None:
+    redis = FakeRedis()
+    sessions = AuthSessionService(redis, settings)
+    _access, refresh = await sessions.issue("customer-1")
+    claims = decode_token(refresh, expected_type=TokenType.REFRESH, settings=settings)
+    refresh_key = sessions._refresh_key(str(claims["jti"]))
+    stored_digest = redis.values[refresh_key]
+
+    await redis.delete(sessions._session_key(str(claims["sid"])))
+
+    assert await sessions.rotate(refresh) is None
+    assert redis.values[refresh_key] == stored_digest
+
+
+@pytest.mark.asyncio
+async def test_refresh_is_not_consumed_when_session_user_does_not_match(settings) -> None:
+    redis = FakeRedis()
+    sessions = AuthSessionService(redis, settings)
+    _access, refresh = await sessions.issue("customer-1")
+    claims = decode_token(refresh, expected_type=TokenType.REFRESH, settings=settings)
+    refresh_key = sessions._refresh_key(str(claims["jti"]))
+    session_key = sessions._session_key(str(claims["sid"]))
+    stored_digest = redis.values[refresh_key]
+    redis.hashes[session_key]["userId"] = "another-user"
+
+    assert await sessions.rotate(refresh) is None
+    assert redis.values[refresh_key] == stored_digest
