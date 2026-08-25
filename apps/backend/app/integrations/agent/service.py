@@ -219,9 +219,12 @@ class CustomerAgentService:
         try:
             result = await tool.coroutine(**action.arguments)
         except Exception as exc:
-            logger.warning(
+            logger.exception(
                 "confirmed_agent_action_failed",
-                extra={"error_type": type(exc).__name__},
+                extra={
+                    "error_type": type(exc).__name__,
+                    "tool_name": action.tool_name,
+                },
             )
             return "ดำเนินการไม่สำเร็จ กรุณาตรวจสอบรายการแล้วลองใหม่"
         return self._confirmed_action_message(action, result)
@@ -310,7 +313,14 @@ class CustomerAgentService:
                                 mutation_pending = True
                                 break
                             result = await tool.ainvoke(arguments)
-                        except Exception:
+                        except Exception as exc:
+                            logger.exception(
+                                "customer_agent_tool_failed",
+                                extra={
+                                    "error_type": type(exc).__name__,
+                                    "tool_name": call.get("name"),
+                                },
+                            )
                             result = "The requested operation could not be completed"
                     messages.append(
                         ToolMessage(content=str(result)[:8000], tool_call_id=call["id"])
