@@ -12,6 +12,12 @@ from app.jobs.context import bind_correlation_id, services_from
 logger = logging.getLogger(__name__)
 
 
+def _masked_line_user_id(line_user_id: str) -> str:
+    if len(line_user_id) <= 12:
+        return "***"
+    return f"{line_user_id[:6]}...{line_user_id[-6:]}"
+
+
 @broker.task(task_name=TaskName.LINE_PUSH.value)
 async def push_line(
     line_user_id: str,
@@ -23,15 +29,27 @@ async def push_line(
 
     bind_correlation_id(correlation_id, task_id=context.message.task_id)
     services = services_from(context)
-    logger.info(
-        "line_push_task_started",
-        extra={
-            "correlation_id": correlation_id,
-            "task_id": context.message.task_id,
-            "task_name": TaskName.LINE_PUSH.value,
-        },
-    )
-    await services.line_bot.push_messages(line_user_id=line_user_id, messages=messages)
+    common = {
+        "correlation_id": correlation_id,
+        "task_id": context.message.task_id,
+        "task_name": TaskName.LINE_PUSH.value,
+        "line_user_id_masked": _masked_line_user_id(line_user_id),
+        "line_user_id_length": len(line_user_id),
+    }
+    logger.info("line_push_task_started", extra=common)
+    try:
+        await services.line_bot.push_messages(line_user_id=line_user_id, messages=messages)
+    except Exception as exc:
+        logger.exception(
+            "line_push_task_failed",
+            extra={
+                **common,
+                "error_type": type(exc).__name__,
+                "upstream_status": getattr(exc, "status_code", None),
+            },
+        )
+        raise
+    logger.info("line_push_task_succeeded", extra=common)
 
 
 @broker.task(task_name=TaskName.LINE_REPLY.value)
@@ -49,12 +67,22 @@ async def reply_line(
 
     bind_correlation_id(correlation_id, task_id=context.message.task_id)
     services = services_from(context)
-    logger.info(
-        "line_reply_task_started",
-        extra={
-            "correlation_id": correlation_id,
-            "task_id": context.message.task_id,
-            "task_name": TaskName.LINE_REPLY.value,
-        },
-    )
-    await services.line_bot.reply_messages(reply_token=reply_token, messages=messages)
+    common = {
+        "correlation_id": correlation_id,
+        "task_id": context.message.task_id,
+        "task_name": TaskName.LINE_REPLY.value,
+    }
+    logger.info("line_reply_task_started", extra=common)
+    try:
+        await services.line_bot.reply_messages(reply_token=reply_token, messages=messages)
+    except Exception as exc:
+        logger.exception(
+            "line_reply_task_failed",
+            extra={
+                **common,
+                "error_type": type(exc).__name__,
+                "upstream_status": getattr(exc, "status_code", None),
+            },
+        )
+        raise
+    logger.info("line_reply_task_succeeded", extra=common)
