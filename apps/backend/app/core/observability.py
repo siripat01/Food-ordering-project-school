@@ -74,7 +74,7 @@ class JsonLogFormatter(logging.Formatter):
         "upstream_status": "upstreamStatus",
         "validation_errors": "validationErrors",
         "line_user_id_masked": "lineUserIdMasked",
-"line_user_id_length": "lineUserIdLength",
+        "line_user_id_length": "lineUserIdLength",
     }
 
     def format(self, record: logging.LogRecord) -> str:
