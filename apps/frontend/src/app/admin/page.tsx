@@ -200,8 +200,16 @@ export default function StaffQueuePage() {
     setUpdatingId(orderId);
     setMutationError(false);
     try {
-      await api.patch(`/staff/orders/${orderId}/status`, { status });
-      await loadQueue();
+      const response = await api.patch(`/staff/orders/${orderId}/status`, { status });
+      const updatedOrder = readUpdatedOrder(response.data);
+      if (!updatedOrder) throw new Error("Invalid order update response");
+
+      // Apply the committed PATCH response immediately. A follow-up queue read
+      // or SSE reconnect may fail transiently through the proxy, but that must
+      // not leave the UI showing the old status or report the mutation as failed.
+      applyOrderUpdate(updatedOrder);
+      setLoadError(false);
+      void loadQueue();
     } catch {
       setMutationError(true);
     } finally {
