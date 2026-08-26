@@ -1,5 +1,6 @@
 "use client";
 
+import axios from "axios";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -18,8 +19,13 @@ export default function Navbar() {
       try {
         const response = await api.get("/users/me");
         setUser(response.data);
-      } catch {
-        clearUser();
+      } catch (error) {
+        // A transient gateway/network failure must not look like a logout.
+        // The axios interceptor has already attempted refresh for a 401, so a
+        // remaining 401 is the only signal here that the session is invalid.
+        if (axios.isAxiosError(error) && error.response?.status === 401) {
+          clearUser();
+        }
       }
     };
     void refreshSession();
