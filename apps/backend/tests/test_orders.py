@@ -80,6 +80,27 @@ async def test_order_price_is_calculated_from_product_catalog() -> None:
 
 
 @pytest.mark.asyncio
+async def test_order_creation_canonicalizes_uppercase_product_ids() -> None:
+    product_id = ObjectId()
+    products = catalog(product_id)
+    orders = AsyncMock()
+    orders.find_one.return_value = None
+    orders.insert_one.return_value = SimpleNamespace(inserted_id=ObjectId())
+    db = SimpleNamespace(products=products, orders=orders)
+
+    result, created = await OrderService(db).create(
+        user_id=str(ObjectId()),
+        idempotency_key="uppercase-product-id",
+        payload=OrderCreate.model_validate(
+            {"items": [{"product_id": str(product_id).upper(), "quantity": 1}]}
+        ),
+    )
+
+    assert created is True
+    assert result.items[0].product_id == str(product_id)
+
+
+@pytest.mark.asyncio
 async def test_duplicate_idempotency_key_returns_existing_order() -> None:
     order_id = ObjectId()
     user_id = str(ObjectId())

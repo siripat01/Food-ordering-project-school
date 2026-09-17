@@ -22,8 +22,9 @@ services:
   backend:
     image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to an immutable GHCR image tag or digest}
     pull_policy: always
+    # Dokploy creates .env beside this Compose file; CI may override the path.
     env_file:
-      - ${BACKEND_ENV_FILE:-./deploy/backend.env}
+      - ${BACKEND_ENV_FILE:-.env}
     restart: unless-stopped
     init: true
     expose:
@@ -48,7 +49,7 @@ services:
     pull_policy: always
     command: ["taskiq", "worker", "app.core.taskiq:broker"]
     env_file:
-      - ${BACKEND_ENV_FILE:-./deploy/backend.env}
+      - ${BACKEND_ENV_FILE:-.env}
     restart: unless-stopped
     init: true
     # No expose/ports: the worker only consumes from Redis.
@@ -84,7 +85,7 @@ services:
     pull_policy: always
     command: ["python", "-m", "app.jobs.dispatcher"]
     env_file:
-      - ${BACKEND_ENV_FILE:-./deploy/backend.env}
+      - ${BACKEND_ENV_FILE:-.env}
     restart: unless-stopped
     init: true
     # Run exactly one replica per deployment. Extra replicas are safe (claims
@@ -117,39 +118,9 @@ services:
         max-size: "10m"
         max-file: "5"
 
-  cloudflared:
-    image: cloudflare/cloudflared:2026.8.2
-    pull_policy: always
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN_FILE: /run/secrets/cloudflare_tunnel_token
-      TUNNEL_LOGLEVEL: info
-    secrets:
-      - cloudflare_tunnel_token
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
-    init: true
-    networks:
-      - private
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
 networks:
   private:
     driver: bridge
 
 volumes:
   redis-data:
-
-secrets:
-  cloudflare_tunnel_token:
-    file: ${CLOUDFLARE_TUNNEL_TOKEN_FILE:-./deploy/secrets/cloudflare-tunnel-token}

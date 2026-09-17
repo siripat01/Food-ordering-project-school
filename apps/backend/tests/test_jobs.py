@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -39,7 +39,11 @@ async def test_order_update_status_task_delegates_to_the_order_workflow() -> Non
     )
 
     services.order_workflow.process_status_change.assert_awaited_once_with(
-        "order-1", correlation_id="request-1"
+        "order-1",
+        user_id=None,
+        status=None,
+        event_id=None,
+        correlation_id="request-1",
     )
 
 
@@ -57,22 +61,31 @@ async def test_order_cancel_task_delegates_to_the_order_workflow() -> None:
 
 
 @pytest.mark.asyncio
-async def test_order_workflow_notifies_through_the_line_push_task() -> None:
-    from app.domain.orders import OrderStatus
+async def test_order_workflow_notifies_from_the_committed_status_snapshot() -> None:
     from app.services.order_workflow import OrderWorkflowService
 
-    order = SimpleNamespace(id="order-1", user_id="user-1", status=OrderStatus.CONFIRMED)
     orders = AsyncMock()
-    orders.get.return_value = order
     notifier = AsyncMock()
-    notifier.resolve_recipient.return_value = "line-recipient"
-    notifier.build_status_messages = lambda _order: [{"type": "text", "text": "ok"}]
+    notifier.resolve_recipient_for_user.return_value = "line-recipient"
+    notifier.build_status_messages_for_snapshot = Mock(
+        return_value=[{"type": "text", "text": "ok"}]
+    )
     push = AsyncMock()
 
     service = OrderWorkflowService(orders=orders, notifier=notifier, push_messages=push)
-    await service.process_status_change("order-1", correlation_id="request-1")
+    await service.process_status_change(
+        "order-1",
+        user_id="user-1",
+        status="confirmed",
+        event_id="event-1",
+        correlation_id="request-1",
+    )
 
-    orders.get.assert_awaited_once_with("order-1")
+    orders.get.assert_not_awaited()
+    notifier.resolve_recipient_for_user.assert_awaited_once_with("user-1")
+    notifier.build_status_messages_for_snapshot.assert_called_once_with(
+        order_id="order-1", status="confirmed"
+    )
     push.assert_awaited_once_with(
         "line-recipient", [{"type": "text", "text": "ok"}], "request-1"
     )

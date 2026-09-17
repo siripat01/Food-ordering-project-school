@@ -38,8 +38,13 @@ async def _dispatch_order_created(event: OutboxEvent) -> None:
 async def _dispatch_order_status_changed(event: OutboxEvent) -> None:
     from app.jobs.order import update_order_status
 
+    user_id = event.payload.get("userId")
+    status = event.payload.get("status")
     await update_order_status.kiq(
         order_id=str(event.payload["orderId"]),
+        user_id=str(user_id) if user_id is not None else None,
+        status=str(status) if status is not None else None,
+        event_id=event.id,
         correlation_id=event.correlation_id,
     )
 

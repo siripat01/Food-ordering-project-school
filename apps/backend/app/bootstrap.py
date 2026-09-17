@@ -27,8 +27,6 @@ from app.services.order_workflow import OrderWorkflowService
 from app.services.orders import OrderService
 from app.services.outbox import OutboxRepository, OutboxService
 from app.services.products import ProductService
-from app.services.recommendation_runtime import RecommendationModelRuntime
-from app.services.recommendations import RecommendationService
 from app.services.users import UserService
 
 PushMessages = Callable[[str, list[dict[str, Any]], str | None], Awaitable[None]]
@@ -51,8 +49,6 @@ class ApiServices:
     users: UserService
     auth_sessions: AuthSessionService
     products: ProductService
-    recommendation_runtime: RecommendationModelRuntime
-    recommendations: RecommendationService
     order_events: OrderEventBroker
     order_updates: OrderUpdateDispatcher
     outbox: OutboxService
@@ -130,7 +126,6 @@ async def build_api_services(
     redis = RedisDatabase(settings)
     line_bot = LineBotClient(settings)
     http_client: httpx.AsyncClient | None = None
-    order_updates: OrderUpdateDispatcher | None = None
 
     try:
         await db.connect()
@@ -141,25 +136,8 @@ async def build_api_services(
         users = UserService(db)
         auth_sessions = AuthSessionService(redis.client, settings)
         products = ProductService(db)
-        recommendation_runtime = RecommendationModelRuntime(
-            db=db,
-            settings=settings,
-            metrics=resolved_metrics,
-            redis=redis.client,
-        )
-        recommendations = RecommendationService(
-            db=db,
-            products=products,
-            settings=settings,
-            http_client=http_client,
-            metrics=resolved_metrics,
-            runtime=recommendation_runtime,
-        )
         order_events = OrderEventBroker(queue_size=settings.sse_subscriber_queue_size)
-        order_updates = OrderUpdateDispatcher(
-            broker=order_events,
-            recommendations=recommendations,
-        )
+        order_updates = OrderUpdateDispatcher(broker=order_events)
         outbox = OutboxService(OutboxRepository(db))
         orders = OrderService(
             db,
@@ -178,8 +156,6 @@ async def build_api_services(
             users=users,
             auth_sessions=auth_sessions,
             products=products,
-            recommendation_runtime=recommendation_runtime,
-            recommendations=recommendations,
             order_events=order_events,
             order_updates=order_updates,
             outbox=outbox,
@@ -188,8 +164,6 @@ async def build_api_services(
             line_oauth=line_oauth,
         )
     except Exception:
-        if order_updates is not None:
-            await _close_quietly(order_updates.close())
         await _close_quietly(line_bot.close())
         if http_client is not None:
             await _close_quietly(http_client.aclose())
@@ -201,7 +175,6 @@ async def build_api_services(
 async def close_api_services(services: ApiServices) -> None:
     """Close resources owned by one FastAPI process."""
 
-    await services.order_updates.close()
     await services.line_bot.close()
     await services.http_client.aclose()
     await services.redis.close()
@@ -232,8 +205,8 @@ async def build_worker_services(
         products = ProductService(db)
         outbox = OutboxService(OutboxRepository(db))
         idempotency = IdempotencyService(db)
-        # Worker-side writes still need the outbox, but SSE/recommendation fan-out
-        # belongs to the API process and is intentionally not constructed here.
+        # Worker-side writes still need the outbox, but SSE fan-out belongs to the
+        # API process and is intentionally not constructed here.
         orders = OrderService(
             db,
             metrics=resolved_metrics,

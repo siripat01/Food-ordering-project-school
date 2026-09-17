@@ -64,25 +64,40 @@ class OrderWorkflowService:
             },
         )
 
-    async def process_status_change(self, order_id: str, *, correlation_id: str | None) -> None:
+    async def process_status_change(
+        self,
+        order_id: str,
+        *,
+        user_id: str | None = None,
+        status: str | None = None,
+        event_id: str | None = None,
+        correlation_id: str | None,
+    ) -> None:
         """Notify the customer about a committed status change.
 
-        The current status is re-read from MongoDB rather than trusted from the
-        event payload, so a duplicate or late delivery cannot announce a stale
-        status.
+        New tasks use the committed event snapshot. The fallback read keeps
+        tasks queued by an older image compatible during a rolling deployment.
         """
-        order = await self.orders.get(order_id)
-        await self._notify(
-            order,
-            self.notifier.build_status_messages(order),
-            correlation_id=correlation_id,
+        if user_id is None or status is None:
+            order = await self.orders.get(order_id)
+            user_id = order.user_id
+            status = order.status.value
+
+        messages = self.notifier.build_status_messages_for_snapshot(
+            order_id=order_id,
+            status=status,
         )
+        if messages:
+            recipient = await self.notifier.resolve_recipient_for_user(user_id)
+            if recipient is not None:
+                await self.push_messages(recipient, messages, correlation_id)
         logger.info(
             "order_status_processed",
             extra={
                 "correlation_id": correlation_id,
-                "order_id": order.id,
-                "order_status": order.status.value,
+                "event_id": event_id,
+                "order_id": order_id,
+                "order_status": status,
             },
         )
 

@@ -10,15 +10,10 @@ from app.main import create_app
 def test_missing_required_configuration_fails_clearly(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MONGODB_URI", raising=False)
     monkeypatch.delenv("JWT_SECRET", raising=False)
-    monkeypatch.delenv("RECOMMENDATION_USER_REF_SECRET", raising=False)
     with pytest.raises(ValidationError) as exc_info:
         Settings(_env_file=None)
     errors = {str(error["loc"][0]) for error in exc_info.value.errors()}
-    assert {
-        "mongodb_uri",
-        "jwt_secret",
-        "recommendation_user_ref_secret",
-    } <= errors
+    assert {"mongodb_uri", "jwt_secret"} <= errors
 
 
 def test_weak_jwt_secret_is_rejected() -> None:
@@ -47,6 +42,18 @@ def test_application_can_be_constructed_with_valid_configuration(settings: Setti
     paths = {route.path for route in app.routes}
     assert "/api/v1/health/live" in paths
     assert "/api/v1/health/ready" in paths
+    assert not any(path.startswith("/api/v1/recommendations") for path in paths)
+
+
+def test_recommendation_configuration_is_not_part_of_settings() -> None:
+    settings = Settings(
+        _env_file=None,
+        mongodb_uri="mongodb://localhost:27017",
+        jwt_secret="test-secret-0123456789abcdef0123456789",
+    )
+
+    assert not hasattr(settings, "recommender_enabled")
+    assert not hasattr(settings, "recommendation_user_ref_secret")
 
 
 def test_llm_requires_provider_neutral_api_key(settings: Settings) -> None:
@@ -70,41 +77,3 @@ def test_legacy_openai_key_name_remains_backward_compatible(settings: Settings) 
     )
 
     assert configured.llm_api_key is not None
-
-
-def test_recommendation_previous_keys_are_versioned_and_distinct(
-    settings: Settings,
-) -> None:
-    current = settings.recommendation_user_ref_secret
-    with pytest.raises(ValidationError, match="must be distinct"):
-        Settings(
-            _env_file=None,
-            mongodb_uri=settings.mongodb_uri,
-            jwt_secret=settings.jwt_secret,
-            recommendation_user_ref_secret=current,
-            recommendation_user_ref_key_version="v2",
-            recommendation_user_ref_previous_secrets={"v1": current},
-        )
-
-    configured = Settings(
-        _env_file=None,
-        mongodb_uri=settings.mongodb_uri,
-        jwt_secret=settings.jwt_secret,
-        recommendation_user_ref_secret=current,
-        recommendation_user_ref_key_version="v2",
-        recommendation_user_ref_previous_secrets={
-            "v1": "previous-recommendation-ref-secret-0123456789abcdef"
-        },
-    )
-
-    assert set(configured.recommendation_user_ref_previous_secrets) == {"v1"}
-
-
-def test_recommendation_secret_cannot_reuse_jwt_secret(settings: Settings) -> None:
-    with pytest.raises(ValidationError, match="must not reuse JWT_SECRET"):
-        Settings(
-            _env_file=None,
-            mongodb_uri=settings.mongodb_uri,
-            jwt_secret=settings.jwt_secret,
-            recommendation_user_ref_secret=settings.jwt_secret,
-        )

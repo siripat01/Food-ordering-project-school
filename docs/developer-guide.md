@@ -54,7 +54,7 @@ From the repository root:
 cp .env.example .env
 ```
 
-Replace both `JWT_SECRET` and `RECOMMENDATION_USER_REF_SECRET` in the untracked `.env` with independent generated random values of at least 32 characters. The placeholders are intentionally rejected. Keep `LINE_ENABLED=false`, `LLM_ENABLED=false`, and `RECOMMENDER_ENABLED=false` until their complete configuration is available.
+Replace `JWT_SECRET` in the untracked `.env` with a generated random value of at least 32 characters. The placeholder is intentionally rejected. Keep `LINE_ENABLED=false` and `LLM_ENABLED=false` until their complete configuration is available.
 
 Start the stack:
 
@@ -142,21 +142,10 @@ docker compose up --detach --wait
 # Validate the production image-pull contract without starting it.
 BACKEND_IMAGE=ghcr.io/example/hiwkaw-backend:sha-test \
 BACKEND_ENV_FILE=.env \
-CLOUDFLARE_TUNNEL_TOKEN_FILE=/path/to/test-token-file \
 docker compose --file compose.prod.yaml config --quiet
 ```
 
-The GitHub Actions workflow runs the same lint, type-check, test, frontend-build, and container-startup boundaries. Pull requests stop there. Successful `main`, SemVer-tag, and manual runs additionally publish an AMD64/ARM64 backend image to GHCR; production must deploy its immutable SHA tag or digest rather than build on the VM.
-
-Build and evaluate the bounded CPU-only recommendation artifacts without exporting user identities:
-
-```bash
-cd apps/backend
-.venv/bin/python -m scripts.build_recommendation_model
-.venv/bin/python -m scripts.evaluate_recommendations --days 180 --test-days 14
-```
-
-Both commands are read-only by default. After reviewing the temporal metrics and activation decision, use `python -m scripts.build_recommendation_model --write --activate`. See the [CPU Recommendation System](recommendation-system-plan.md) for artifact lifecycle, rollout, rollback, and operational bounds.
+The GitHub Actions workflow runs the same lint, type-check, test, frontend-build, and container-startup boundaries. Pull requests stop there. `main`, SemVer-tag, and manual runs additionally publish an AMD64/ARM64 backend image to GHCR in a parallel job; production must deploy its immutable SHA tag or digest rather than build on the VM.
 
 ## Security invariants
 
@@ -213,4 +202,3 @@ Before using `--apply`, follow the backup and verification sequence in the [Oper
 - [LLM Gateway](llm-gateway.md)
 - [Background Jobs and Outbox](background-jobs.md)
 - [Observability Runbook](observability.md)
-- [CPU Recommendation Plan](recommendation-system-plan.md)

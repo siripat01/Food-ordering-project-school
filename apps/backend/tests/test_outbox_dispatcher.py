@@ -170,9 +170,39 @@ async def test_real_routes_enqueue_the_declared_task(monkeypatch) -> None:
 
     process = AsyncMock()
     monkeypatch.setattr(order_tasks.process_order, "kiq", process)
-    service, _ = build_service()
+    service, collection = build_service()
     await seed(service, OutboxEventType.ORDER_CREATED.value)
 
     await OutboxDispatcher(service).run_once()
 
     process.assert_awaited_once_with(order_id="order-1", correlation_id="request-1")
+
+
+@pytest.mark.asyncio
+async def test_status_event_enqueues_its_snapshot(monkeypatch) -> None:
+    from app.jobs import order as order_tasks
+
+    update = AsyncMock()
+    monkeypatch.setattr(order_tasks.update_order_status, "kiq", update)
+    service, collection = build_service()
+    await service.save_event(
+        event_type=OutboxEventType.ORDER_STATUS_CHANGED.value,
+        payload={
+            "orderId": "order-1",
+            "userId": "user-1",
+            "status": "confirmed",
+        },
+        correlation_id="request-1",
+        idempotency_key="order.status_changed:order-1:confirmed",
+    )
+    event_id = str(collection.documents[0]["_id"])
+
+    await OutboxDispatcher(service).run_once()
+
+    update.assert_awaited_once_with(
+        order_id="order-1",
+        user_id="user-1",
+        status="confirmed",
+        event_id=event_id,
+        correlation_id="request-1",
+    )

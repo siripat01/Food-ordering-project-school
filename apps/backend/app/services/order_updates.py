@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -11,10 +10,7 @@ from uuid import uuid4
 from app.core.config import Settings
 from app.domain.common import utc_now
 from app.domain.orders import OrderResponse, OrderStatus
-from app.services.recommendations import RecommendationService
 from app.services.users import UserService
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,15 +92,32 @@ class LineOrderStatusNotifier:
 
     async def resolve_recipient(self, order: OrderResponse) -> str | None:
         """Return the customer's LINE identity, from trusted server state only."""
+        return await self.resolve_recipient_for_user(order.user_id)
+
+    async def resolve_recipient_for_user(self, user_id: str) -> str | None:
+        """Resolve a customer's LINE identity from trusted server state."""
         if not self.settings.line_enabled:
             return None
-        return await self.users.get_line_user_id(order.user_id)
+        return await self.users.get_line_user_id(user_id)
 
     def build_status_messages(self, order: OrderResponse) -> list[dict[str, Any]]:
-        if order.status not in self.NOTIFIABLE_STATUSES:
+        return self.build_status_messages_for_snapshot(
+            order_id=order.id,
+            status=order.status.value,
+        )
+
+    def build_status_messages_for_snapshot(
+        self,
+        *,
+        order_id: str,
+        status: str,
+    ) -> list[dict[str, Any]]:
+        order_status = OrderStatus(status)
+        if order_status not in self.NOTIFIABLE_STATUSES:
             return []
-        headline = self.STATUS_MESSAGES[order.status]
-        return [{"type": "text", "text": f"{headline}\n{self._reference(order)}"}]
+        headline = self.STATUS_MESSAGES[order_status]
+        reference = f"Order #{order_id[-8:].upper()}"
+        return [{"type": "text", "text": f"{headline}\n{reference}"}]
 
     def build_created_messages(self, order: OrderResponse) -> list[dict[str, Any]]:
         return [{"type": "text", "text": f"{self.CREATED_MESSAGE}\n{self._reference(order)}"}]
@@ -122,35 +135,11 @@ class OrderUpdateDispatcher:
         self,
         *,
         broker: OrderEventBroker,
-        recommendations: RecommendationService,
     ) -> None:
         self.broker = broker
-        self.recommendations = recommendations
-        self._tasks: set[asyncio.Task[None]] = set()
 
     def publish(self, order: OrderResponse) -> None:
         self.broker.publish(order)
-        if order.status is OrderStatus.COMPLETED:
-            task = asyncio.create_task(
-                self._record_purchase_safely(order),
-                name=f"recommendation-purchase-{order.id}",
-            )
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
-
-    async def _record_purchase_safely(self, order: OrderResponse) -> None:
-        try:
-            await self.recommendations.record_purchase(order)
-        except Exception:
-            logger.warning(
-                "recommendation_purchase_record_failed",
-                extra={"order_id": order.id, "order_status": order.status.value},
-            )
-
-    async def close(self) -> None:
-        if not self._tasks:
-            return
-        await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
 
 def heartbeat_payload() -> dict[str, str]:

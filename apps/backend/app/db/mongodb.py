@@ -100,48 +100,6 @@ class MongoDatabase:
         return self._require_client()[self.settings.mongodb_orders_database]["orders"]
 
     @property
-    def recommendation_events(self) -> AsyncCollection[dict[str, Any]]:
-        return self._require_client()[self.settings.mongodb_orders_database][
-            "recommendation_events"
-        ]
-
-    @property
-    def recommendation_slates(self) -> AsyncCollection[dict[str, Any]]:
-        return self._require_client()[self.settings.mongodb_orders_database][
-            "recommendation_slates"
-        ]
-
-    @property
-    def recommendation_event_counters(self) -> AsyncCollection[dict[str, Any]]:
-        return self._require_client()[self.settings.mongodb_orders_database][
-            "recommendation_event_counters"
-        ]
-
-    @property
-    def recommendation_model_versions(self) -> AsyncCollection[dict[str, Any]]:
-        return self._require_client()[self.settings.mongodb_orders_database][
-            "recommendation_model_versions"
-        ]
-
-    @property
-    def recommendation_artifacts(self) -> AsyncCollection[dict[str, Any]]:
-        return self._require_client()[self.settings.mongodb_orders_database][
-            "recommendation_artifacts"
-        ]
-
-    @property
-    def recommendation_model_state(self) -> AsyncCollection[dict[str, Any]]:
-        return self._require_client()[self.settings.mongodb_orders_database][
-            "recommendation_model_state"
-        ]
-
-    @property
-    def recommendation_model_locks(self) -> AsyncCollection[dict[str, Any]]:
-        return self._require_client()[self.settings.mongodb_orders_database][
-            "recommendation_model_locks"
-        ]
-
-    @property
     def outbox_events(self) -> AsyncCollection[dict[str, Any]]:
         return self._require_client()[self.settings.mongodb_orders_database]["outbox_events"]
 
@@ -226,94 +184,10 @@ class MongoDatabase:
             name="orders_active_user",
         )
         await self.orders.create_index(
-            [("status", ASCENDING), ("completedAt", DESCENDING)],
-            name="orders_completed_training",
-        )
-        await self.orders.create_index(
-            [("userId", ASCENDING), ("status", ASCENDING), ("completedAt", DESCENDING)],
-            name="orders_completed_user_profile",
-        )
-        await self.orders.create_index(
             [("userId", ASCENDING), ("idempotencyKey", ASCENDING)],
             unique=True,
             partialFilterExpression={"idempotencyKey": {"$type": "string"}},
             name="uniq_order_idempotency",
-        )
-        await self.orders.create_index(
-            [("status", ASCENDING), ("completedAt", ASCENDING)],
-            name="orders_completed_stream",
-        )
-        recommendation_indexes = await self.recommendation_events.index_information()
-        if "uniq_recommendation_event" in recommendation_indexes:
-            # R0 replaced client event IDs with a server-derived dedupe key. The old
-            # unique eventId index would allow only one document with a missing field.
-            await self.recommendation_events.drop_index("uniq_recommendation_event")
-        await self.recommendation_events.create_index(
-            [("dedupeKey", ASCENDING)],
-            unique=True,
-            partialFilterExpression={"dedupeKey": {"$type": "string"}},
-            name="uniq_recommendation_event_dedupe",
-        )
-        await self._ensure_ttl_index(
-            self.recommendation_events,
-            field="createdAt",
-            expire_after_seconds=self.settings.recommendation_event_retention_days * 86_400,
-            name="ttl_recommendation_event",
-        )
-        await self.recommendation_events.create_index(
-            [("userRef", ASCENDING), ("eventType", ASCENDING), ("createdAt", DESCENDING)],
-            name="recommendation_user_type_created",
-        )
-        await self.recommendation_events.create_index(
-            [("productId", ASCENDING), ("eventType", ASCENDING), ("createdAt", DESCENDING)],
-            name="recommendation_product_type_created",
-        )
-        await self.recommendation_events.create_index(
-            [("recommendationId", ASCENDING), ("userRef", ASCENDING), ("productId", ASCENDING)],
-            name="recommendation_slate_user_product",
-        )
-        await self.recommendation_slates.create_index(
-            [("userRef", ASCENDING), ("createdAt", DESCENDING)],
-            name="recommendation_slates_user_created",
-        )
-        await self._ensure_ttl_index(
-            self.recommendation_slates,
-            field="expiresAt",
-            expire_after_seconds=0,
-            name="ttl_recommendation_slate",
-        )
-        await self._ensure_ttl_index(
-            self.recommendation_event_counters,
-            field="expiresAt",
-            expire_after_seconds=0,
-            name="ttl_recommendation_event_counter",
-        )
-        await self.recommendation_event_counters.create_index(
-            [("userRef", ASCENDING)],
-            name="recommendation_event_counters_user",
-        )
-        await self.recommendation_artifacts.create_index(
-            [("modelVersion", ASCENDING), ("productId", ASCENDING)],
-            unique=True,
-            name="uniq_recommendation_artifact_model_product",
-        )
-        await self.recommendation_artifacts.create_index(
-            [("modelVersion", ASCENDING)],
-            name="recommendation_artifact_model",
-        )
-        await self.recommendation_model_versions.create_index(
-            [("status", ASCENDING), ("builtAt", DESCENDING)],
-            name="recommendation_model_status_built",
-        )
-        await self.recommendation_model_versions.create_index(
-            [("builtAt", DESCENDING)],
-            name="recommendation_model_built",
-        )
-        await self._ensure_ttl_index(
-            self.recommendation_model_locks,
-            field="expiresAt",
-            expire_after_seconds=0,
-            name="ttl_recommendation_model_lock",
         )
         await self.outbox_events.create_index(
             [("status", ASCENDING), ("availableAt", ASCENDING)],

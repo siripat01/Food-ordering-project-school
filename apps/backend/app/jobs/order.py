@@ -36,6 +36,9 @@ async def process_order(
 @broker.task(task_name=TaskName.ORDER_UPDATE_STATUS.value)
 async def update_order_status(
     order_id: str,
+    user_id: str | None = None,
+    status: str | None = None,
+    event_id: str | None = None,
     correlation_id: str | None = None,
     context: Context = TaskiqDepends(),
 ) -> None:
@@ -47,13 +50,18 @@ async def update_order_status(
         "order_task_started",
         extra={
             "correlation_id": correlation_id,
+            "event_id": event_id,
             "order_id": order_id,
+            "order_status": status,
             "task_id": context.message.task_id,
             "task_name": TaskName.ORDER_UPDATE_STATUS.value,
         },
     )
     await services.order_workflow.process_status_change(
         order_id,
+        user_id=user_id,
+        status=status,
+        event_id=event_id,
         correlation_id=correlation_id,
     )
 

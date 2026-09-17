@@ -12,7 +12,6 @@ This directory contains the operational and engineering documentation for the Fo
 | [LLM Gateway](llm-gateway.md) | AI/backend engineers | LiteLLM complexity routing, DeepSeek configuration, fallback, and cache safety |
 | [Background Jobs and Outbox](background-jobs.md) | Backend engineers and operators | Taskiq worker, transactional outbox, dispatcher, retries, idempotency, and delivery guarantees |
 | [Observability Runbook](observability.md) | Operators and backend engineers | Structured logs, Prometheus metrics, redaction, and operational checks |
-| [CPU Recommendation Plan](recommendation-system-plan.md) | Backend and recommendation engineers | Hardened event attribution, materialized trending, item-item ranking, evaluation, and rollout |
 | [Credential Incident Runbook](security-incident-response.md) | Repository owner and security responder | Required external credential rotation and optional coordinated history cleanup |
 
 ## Quick paths
@@ -27,6 +26,6 @@ This directory contains the operational and engineering documentation for the Fo
 
 ## Implementation status
 
-Phases 0 through 3 are implemented, including the SSE staff queue, LINE status notifications, slate-validated recommendation analytics, and bounded CPU-only trending/item-item artifacts with controlled rollout and rollback. Backend lint/type/tests, frontend type-check/build, and container smoke tests passed locally and in GitHub Actions for Phase 3 commit `e5bd195`. Real LINE sandbox end-to-end verification remains an external action.
+The secure core, SSE staff queue, LINE status notifications, admin product management, and customer ordering flows are implemented. Backend lint/type/tests, frontend type-check/build, and container smoke tests remain the required quality gates. Real LINE sandbox end-to-end verification remains an external action.
 
 Documentation must describe only behavior present in the repository. Update the relevant guide in the same change whenever an endpoint, role permission, environment variable, operational procedure, or user flow changes.

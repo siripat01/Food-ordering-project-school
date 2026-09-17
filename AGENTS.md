@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository is a portfolio-oriented food-ordering modular monolith. It combines a FastAPI and MongoDB backend with a Next.js frontend, LINE Login and Messaging API integration, role-scoped LangChain tools, an optional customer ordering assistant, and a feature-flagged external recommender.
+This repository is a portfolio-oriented food-ordering modular monolith. It combines a FastAPI and MongoDB backend with a Next.js frontend, LINE Login and Messaging API integration, role-scoped LangChain tools, and an optional customer ordering assistant.
 
 Communicate progress and explanations to the user in Thai. Keep code, identifiers, commits, and technical documentation in English.
 
@@ -64,9 +64,9 @@ There are four phases, numbered 0 through 3.
 - Added an idempotent, dry-run-by-default order migration at `apps/backend/scripts/migrate_orders_v2.py`.
 - Added deterministic AI mutation confirmations, minimized customer-agent DTOs, prompt-injection regression tests, and per-user LLM request limits. Prompt text remains guidance, never an authorization boundary.
 - Added non-root backend/frontend containers and local Docker Compose.
-- The current local suite passes Ruff/format, strict Mypy for 45 backend source files, 80 tests with the real-MongoDB marker skipped, frontend type-check/production build, and a Python 3.12 backend image build. The dedicated real-MongoDB boundary passed in the previous verified CI run. On 2026-08-22, an isolated Docker Compose project rebuilt the current images, passed liveness/readiness/frontend/metrics/auth-boundary smoke checks, exposed the recommendation builder CLI, rejected missing configuration, and confirmed both application containers run as non-root users.
+- The current local suite covers Ruff/format, strict Mypy, backend tests, frontend type-check/production build, and backend image startup. The dedicated real-MongoDB boundary is available through the integration marker. The Compose stack includes liveness/readiness/frontend/metrics/auth-boundary smoke checks and non-root application containers.
 
-Local startup intentionally fails if either `JWT_SECRET` or `RECOMMENDATION_USER_REF_SECRET` is missing, weak, reused, or still a placeholder. Generate two independent stable random values of at least 32 characters, store them only in the untracked `.env`, and recreate the backend container. Never commit those values.
+Local startup intentionally fails if `JWT_SECRET` is missing, weak, or still a placeholder. Generate a stable random value of at least 32 characters, store it only in the untracked `.env`, and recreate the backend container. Never commit it.
 
 ### Phase 2: Quality and observability — implemented and locally verified
 
@@ -88,20 +88,15 @@ Remote verification: GitHub Actions run `32586236010` passed backend, frontend, 
 - The authenticated staff queue uses SSE snapshots, committed order updates, bounded subscriber queues, heartbeats, reconnect UX, and REST fallback.
 - Admins have a responsive product-management screen at `/admin/products`; user-role management remains API-only.
 - LINE notifications are dispatched after committed operational status changes without making LINE availability part of the database transaction.
-- Recommendation slates are authenticated, expiring, and product-bound. Client engagement uses server dedupe keys, daily caps, viewport-qualified impressions, and a dedicated versioned HMAC pseudonym key independent of JWT signing.
-- Completed orders are the authoritative purchase source. Customers can idempotently purge their raw recommendation slates/events/counters/cache, including still-live previous key versions.
-- The CPU-only builder creates immutable time-decayed trending and bounded item-item artifacts, evaluates recent/trending/item-item on one temporal split, reports Recall/NDCG/coverage/popularity-share/cohorts, and enforces quality/size gates.
-- Serving supports explicit local/external-first/external-fallback modes, deterministic 0–100% item-item rollout, bounded last-known-good caches, recent-catalog fallback, atomic activation, validated rollback, and active/previous model retention.
-
-Remaining external/operational work: rotate the historically exposed MongoDB credential outside the repository, validate LINE flows with dedicated sandbox credentials, build a model from representative deployment data, and increase personalized rollout only after reviewing offline and live metrics.
+Remaining external/operational work: rotate the historically exposed MongoDB credential outside the repository and validate LINE flows with dedicated sandbox credentials.
 
 ### Production delivery contract
 
 - GitHub Actions runs backend, frontend, and local-container gates for pull requests without publishing packages.
-- Successful `main`, `v*.*.*`, and manually dispatched runs publish the backend to GHCR with immutable full-commit tags, multi-architecture manifests, provenance, and SBOM metadata.
-- `compose.prod.yaml` pulls a caller-selected immutable backend reference and runs it with `cloudflared` on a private Docker network. It does not run the Vercel frontend or local MongoDB and does not publish backend port 8000.
+- `main`, `v*.*.*`, and manually dispatched runs publish the backend to GHCR with immutable full-commit tags, multi-architecture manifests, provenance, and SBOM metadata. The image publication job runs independently from the quality checks so the digest is available sooner; deploy only references from runs whose required checks passed.
+- `compose.prod.yaml` pulls a caller-selected immutable backend reference on a private Docker network. Dokploy exposes the backend through its Domains/Traefik integration; the stack does not run the Vercel frontend or local MongoDB and does not publish backend port 8000.
 - Vercel builds `apps/frontend` separately with the production `NEXT_PUBLIC_API_URL`.
-- Populated `deploy/backend.env`, `deploy/compose.env`, and `deploy/secrets/` are VM-only ignored files. Their `.example` files contain placeholders only.
+- Dokploy production values live in the Compose Environment. The `deploy/*.example` files are placeholder-only references and must not contain populated credentials.
 
 ## LLM provider note
 
@@ -157,4 +152,3 @@ Runtime endpoints:
 2. Inspect the complete working tree and current diff before making changes.
 3. Keep the backend, frontend, and container GitHub Actions jobs green on every change.
 4. Validate LINE OAuth, webhook, and status notifications with dedicated sandbox credentials.
-5. Run a recommendation shadow build on representative data, review the gate output, then use 5%, 25%, and 100% rollout checkpoints with rollback readiness.

@@ -199,21 +199,27 @@ class OrderService:
             return self.to_response(existing), False
 
         product_ids: list[ObjectId] = []
+        canonical_product_ids: list[str] = []
         try:
-            product_ids = [parse_object_id(item.product_id) for item in payload.items]
+            for item in payload.items:
+                product_id = parse_object_id(item.product_id)
+                product_ids.append(product_id)
+                canonical_product_ids.append(str(product_id))
         except ValueError as exc:
             raise InvalidInputError(str(exc)) from exc
         product_docs = await self.db.products.find(
             {"_id": {"$in": list(set(product_ids))}}
         ).to_list()
         products_by_id = {str(doc["_id"]): doc for doc in product_docs}
-        if len(products_by_id) != len(set(item.product_id for item in payload.items)):
+        if len(products_by_id) != len(set(canonical_product_ids)):
             raise InvalidInputError("One or more products do not exist")
 
         order_items: list[dict[str, Any]] = []
         subtotal = Decimal("0")
-        for requested in payload.items:
-            product_doc = products_by_id[requested.product_id]
+        for requested, canonical_product_id in zip(
+            payload.items, canonical_product_ids, strict=True
+        ):
+            product_doc = products_by_id[canonical_product_id]
             product_status = ProductService.normalize_status(product_doc.get("status"))
             if product_status is not ProductStatus.AVAILABLE:
                 raise ConflictError("One or more products are unavailable")
@@ -242,7 +248,7 @@ class OrderService:
             subtotal += line_total
             order_items.append(
                 {
-                    "productId": requested.product_id,
+                    "productId": canonical_product_id,
                     "productNameSnapshot": str(
                         product_doc.get("productName")
                         or product_doc.get("product_name")

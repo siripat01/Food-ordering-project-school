@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 import Loading from "./components/Loading";
 import Navbar from "./components/Navbar";
-import RecommendProduct from "./components/RecommendProduct";
+import ProductImage from "./components/ProductImage";
 import api from "./libs/axios";
 import { useUserStore } from "./store/user";
 
@@ -69,18 +69,28 @@ export default function Home() {
       <section className="border-y border-[#dde3dc] bg-[#eef2eb]/65">
         <div className="page-shell py-16 sm:py-20">
           <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-            <div><p className="eyebrow">Popular choices</p><h2 className="mt-2 text-3xl font-black tracking-tight">เมนูน่าลองวันนี้</h2></div>
+            <div><p className="eyebrow">From our menu</p><h2 className="mt-2 text-3xl font-black tracking-tight">เมนูจากร้าน</h2></div>
             <Link href="/product" className="text-sm font-bold text-[var(--brand)] hover:underline">ดูเมนูทั้งหมด →</Link>
           </div>
 
           {loading ? (
             <Loading label="กำลังเลือกเมนูน่าลอง…" fullPage={false} />
           ) : loadFailed ? (
-            <div className="surface-card p-8 text-center text-[var(--muted)]">ยังโหลดเมนูแนะนำไม่ได้ในขณะนี้ แต่คุณสามารถเปิดหน้าเมนูเพื่อลองอีกครั้งได้</div>
+            <div className="surface-card p-8 text-center text-[var(--muted)]">ยังโหลดเมนูไม่ได้ในขณะนี้ แต่คุณสามารถเปิดหน้าเมนูเพื่อลองอีกครั้งได้</div>
           ) : products.length === 0 ? (
             <div className="surface-card p-8 text-center text-[var(--muted)]">ร้านกำลังเตรียมเมนูใหม่ กลับมาดูอีกครั้งเร็ว ๆ นี้</div>
           ) : (
-            <RecommendProduct fallbackProducts={products} />
+            <div className="grid gap-6 sm:grid-cols-3">
+              {products.map((product) => (
+                <Link href={`/order/${product.id}`} className="surface-card group overflow-hidden" key={product.id}>
+                  <ProductImage imageUrl={product.image_url} name={product.name} className="h-48 w-full transition-transform duration-300 group-hover:scale-[1.025]" />
+                  <div className="flex items-center justify-between gap-4 p-5">
+                    <h3 className="font-black">{product.name}</h3>
+                    <span className="shrink-0 font-black text-[var(--brand)]">฿{product.price.toFixed(2)}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
           )}
         </div>
       </section>

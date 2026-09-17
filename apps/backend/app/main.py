@@ -15,12 +15,11 @@ from app.api.routes import (
     metrics,
     orders,
     products,
-    recommendations,
     staff,
 )
 from app.bootstrap import build_api_services, close_api_services
 from app.core.config import Settings, get_settings
-from app.core.middleware import RequestIDMiddleware
+from app.core.middleware import CookieCSRFMiddleware, RequestIDMiddleware
 from app.core.observability import ApplicationMetrics, configure_logging
 from app.core.taskiq import broker
 from app.domain.errors import (
@@ -62,8 +61,6 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
             app.state.users = services.users
             app.state.auth_sessions = services.auth_sessions
             app.state.products = services.products
-            app.state.recommendation_runtime = services.recommendation_runtime
-            app.state.recommendations = services.recommendations
             app.state.order_events = services.order_events
             app.state.orders = services.orders
             app.state.outbox = services.outbox
@@ -94,6 +91,10 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
         expose_headers=["X-Request-ID"],
     )
 
+    application.add_middleware(
+        CookieCSRFMiddleware,
+        allowed_origins=resolved_settings.cors_origin_strings,
+    )
     application.add_middleware(RequestIDMiddleware, metrics=application_metrics)
 
     @application.exception_handler(DomainError)
@@ -123,7 +124,6 @@ def create_app(settings: Settings | None = None, *, initialize_clients: bool = T
     application.include_router(health.router, prefix=api_prefix)
     application.include_router(auth.router, prefix=api_prefix)
     application.include_router(products.router, prefix=api_prefix)
-    application.include_router(recommendations.router, prefix=api_prefix)
     application.include_router(orders.router, prefix=api_prefix)
     application.include_router(staff.router, prefix=api_prefix)
     application.include_router(admin.router, prefix=api_prefix)

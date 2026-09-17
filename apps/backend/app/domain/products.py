@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from pydantic import Field, HttpUrl, field_validator
+from pydantic import Field, HttpUrl, field_validator, model_validator
 
 from app.domain.common import APIModel, Money
 
@@ -46,6 +46,14 @@ class ProductUpdate(APIModel):
     description: str | None = Field(default=None, max_length=1000)
     image_url: HttpUrl | None = None
     addons: list[AddonInput] | None = Field(default=None, max_length=30)
+
+    @model_validator(mode="after")
+    def reject_explicit_null_catalog_fields(self) -> ProductUpdate:
+        if "price" in self.model_fields_set and self.price is None:
+            raise ValueError("Product price cannot be null")
+        if "status" in self.model_fields_set and self.status is None:
+            raise ValueError("Product status cannot be null")
+        return self
 
 
 class ProductResponse(APIModel):

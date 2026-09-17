@@ -21,11 +21,10 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 - Atomic status changes, status history, order idempotency, and LINE webhook deduplication
 - Role-scoped AI tool factories; the customer toolset has no staff or admin operations
 - Deterministic confirmation for AI-triggered order creation/cancellation, minimized tool DTOs, and per-user LLM rate limits
-- Redis-backed, bounded, expiring LLM conversation context, confirmations, rate limits, and recommendation-result cache
-- Feature flags for LINE, LLM, and the external recommender
+- Redis-backed, bounded, expiring LLM conversation context, confirmations, and rate limits
+- Feature flags for LINE and LLM
 - In-process LiteLLM complexity/cost routing, independent fallbacks, and safe opt-in Redis caching
 - Structured redacted JSON logs and Prometheus request, order, and LLM metrics
-- Slate-validated recommendation events, CPU-only trending/item-item artifacts, controlled rollout/rollback, and temporal Recall@K/NDCG@K evaluation
 - Explicit CORS allowlist, request IDs, liveness, readiness, and non-root containers
 - Dual-read compatibility and an idempotent legacy-order migration command
 - GitHub Actions for lint, type-check, unit/integration tests, frontend build, and container smoke tests
@@ -44,7 +43,7 @@ The original school prototype demonstrated LINE Login, a chatbot, MongoDB persis
 │   │   ├── app/integrations/ # LINE and role-scoped AI agent
 │   │   ├── app/jobs/         # Taskiq task handlers and the outbox dispatcher
 │   │   ├── app/services/     # Application services
-│   │   ├── scripts/          # Explicit migration and CPU recommendation jobs
+│   │   ├── scripts/          # Explicit data migration jobs
 │   │   └── tests/
 │   └── frontend/             # Next.js customer/staff web application
 ├── docker-compose.yaml
@@ -78,9 +77,6 @@ flowchart LR
     Worker --> Orders
     Worker --> Agent
     Worker -->|line.push / line.reply| LINE
-    API --> Recommendations[Recommendation service]
-    Recommendations --> Mongo
-    API -. feature-flagged .-> Recommender[External recommender]
 ```
 
 The application remains one deployable backend. The modules separate responsibilities without introducing microservices or infrastructure that this project does not need.
@@ -151,7 +147,7 @@ Requirements: Docker with Compose v2.
 
 ```bash
 cp .env.example .env
-# Replace placeholders and generate independent JWT and recommendation secrets.
+# Replace placeholders with local development values.
 docker compose up --build
 ```
 
@@ -160,7 +156,7 @@ docker compose up --build
 - Liveness: <http://localhost:8000/api/v1/health/live>
 - Readiness: <http://localhost:8000/api/v1/health/ready>
 
-`LINE_ENABLED`, `LLM_ENABLED`, and `RECOMMENDER_ENABLED` default to `false`. Enabling a feature without all required variables fails configuration validation with a clear error.
+`LINE_ENABLED` and `LLM_ENABLED` default to `false`. Enabling a feature without all required variables fails configuration validation with a clear error.
 
 ## Environment variables
 
@@ -197,12 +193,6 @@ docker compose up --build
 | `LLM_CONFIRMATION_TTL_MINUTES`, `LLM_REQUESTS_PER_MINUTE` | No | Pending mutation expiry and per-process authenticated-user request limit |
 | `LLM_CACHE_*` | No | Bounded local cache; customer-agent calls always use `no-store` |
 | `LLM_*_COST_PER_MILLION` | No | Explicit inputs for estimated cost metrics |
-| `RECOMMENDER_ENABLED`, `RECOMMENDER_URL`, `RECOMMENDER_TIMEOUT_SECONDS`, `RECOMMENDER_MODE` | No | Optional external provider and explicit `local`, `external_first`, or `external_fallback` policy |
-| `RECOMMENDATION_USER_REF_SECRET`, `RECOMMENDATION_USER_REF_KEY_VERSION`, `RECOMMENDATION_USER_REF_PREVIOUS_SECRETS` | Yes / No | Dedicated pseudonym key, rotation label, and temporary version-to-old-key map for complete privacy purge; never reuse `JWT_SECRET` |
-| `RECOMMENDATION_EVENT_RETENTION_DAYS`, `RECOMMENDATION_SLATE_RETENTION_DAYS` | No | MongoDB TTL retention for pseudonymous events and served slates |
-| `RECOMMENDATION_DAILY_*_CAP` | No | Per-user/product/day engagement abuse bounds |
-| `RECOMMENDATION_ITEM_ITEM_ROLLOUT_PERCENT` | No | Deterministic personalized-model rollout percentage; defaults to `0` |
-| `RECOMMENDATION_MODEL_*`, `RECOMMENDATION_RESULT_CACHE_*`, `RECOMMENDATION_PROFILE_*` | No | Artifact polling, memory/size, result-cache, and profile bounds |
 | `NEXT_PUBLIC_API_URL` | Yes for frontend build | Browser-visible API base URL |
 
 See [.env.example](.env.example) for safe placeholders.
@@ -220,7 +210,6 @@ See [the LLM gateway design](docs/llm-gateway.md) and [the observability runbook
 - [AI security model](docs/ai-security.md)
 - [Background jobs and outbox](docs/background-jobs.md)
 - [Observability runbook](docs/observability.md)
-- [CPU recommendation-system plan](docs/recommendation-system-plan.md)
 - [Credential incident runbook](docs/security-incident-response.md)
 
 ## Database compatibility and migration
@@ -242,7 +231,7 @@ python -m scripts.migrate_orders_v2 --apply
 
 The migration is idempotent and does not delete legacy fields. Rollout order: deploy dual-read/new-write code, back up the database, dry-run, apply in batches, compare document counts/totals, and retain the legacy reader until verification is complete.
 
-Indexes are created at backend startup for user/time, status/time, active order lookup, order idempotency, webhook events, LINE identities, OAuth state TTL, recommendation slates/events/counters, completed-order training scans, and versioned model artifacts.
+Indexes are created at backend startup for user/time, status/time, active order lookup, order idempotency, webhook events, LINE identities, and OAuth state TTL.
 
 ## Testing and quality checks
 
@@ -265,20 +254,9 @@ pnpm build
 cd ../..
 docker compose build
 
-# Build/evaluate a bounded CPU-only model without writing to MongoDB.
-cd apps/backend
-.venv/bin/python -m scripts.build_recommendation_model
-.venv/bin/python -m scripts.evaluate_recommendations --days 180 --test-days 14
-
-# After reviewing the offline metrics, write and request activation.
-.venv/bin/python -m scripts.build_recommendation_model --write --activate
-
-# Roll back by atomically switching to a retained ready version.
-.venv/bin/python -m scripts.build_recommendation_model \
-  --write --rollback-version MODEL_VERSION
 ```
 
-The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC, cross-user order access, trusted price calculation, idempotent creation, invalid terminal transitions, OAuth state consumption, duplicate webhook delivery, customer-agent tool isolation, exact out-of-model mutation confirmation, indirect prompt injection, minimized agent DTOs, per-user LLM rate limiting, SSE fan-out, LINE status-notification boundaries, recommendation idempotency/privacy, offline metrics, log redaction, LiteLLM routing/cache policy, and a real MongoDB API flow. GitHub Actions supplies an isolated MongoDB service and also verifies missing/valid container startup behavior.
+The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC, cross-user order access, trusted price calculation, idempotent creation, invalid terminal transitions, OAuth state consumption, duplicate webhook delivery, customer-agent tool isolation, exact out-of-model mutation confirmation, indirect prompt injection, minimized agent DTOs, per-user LLM rate limiting, SSE fan-out, LINE status-notification boundaries, log redaction, LiteLLM routing/cache policy, and a real MongoDB API flow. GitHub Actions supplies an isolated MongoDB service and also verifies missing/valid container startup behavior.
 
 ## Deployment
 
@@ -287,17 +265,17 @@ The backend tests cover missing configuration, JWT secret strength, 401/403 RBAC
 3. Use HTTPS URLs, set `APP_ENV=production` and `COOKIE_SECURE=true`, and configure an exact CORS allowlist.
 4. Register the exact LINE callback and webhook URLs under the production domain.
 5. Deploy MongoDB separately or use a managed provider with least-privilege network and database access.
-6. Let GitHub Actions publish the backend to GHCR only after every quality and container gate passes.
-7. Put the digest from the workflow summary in `deploy/compose.env`; production Compose pulls that exact backend image and connects it to Cloudflare Tunnel without exposing port `8000`.
+6. Let GitHub Actions run the quality checks and publish the backend image to GHCR. The image job runs in parallel with the checks to shorten feedback time.
+7. Copy the immutable image reference from the GitHub Actions summary into Dokploy's `BACKEND_IMAGE` Compose Environment, then redeploy without publishing port `8000`.
 8. Deploy `apps/frontend` through Vercel with `NEXT_PUBLIC_API_URL` pointing at the stable API hostname.
 9. Gate traffic on `/api/v1/health/ready` and provision the first admin explicitly after that user completes LINE Login; never accept a role from a browser, OAuth claim, or LLM argument.
 
 Production deployment files:
 
-- [`compose.prod.yaml`](compose.prod.yaml) — backend plus Cloudflare Tunnel; no frontend, local MongoDB, or backend host port
-- [`deploy/backend.env.example`](deploy/backend.env.example) — placeholder-only backend runtime configuration
-- [`deploy/compose.env.example`](deploy/compose.env.example) — immutable image and local secret-file paths
-- [Operations Runbook](docs/operations-runbook.md#image-publication) — GHCR, VM, Vercel, rollout, and rollback procedure
+- [`compose.prod.yaml`](compose.prod.yaml) — backend, worker, dispatcher, and Redis for Dokploy; no frontend, local MongoDB, or backend host port
+- [`deploy/backend.env.example`](deploy/backend.env.example) — placeholder-only Dokploy runtime configuration reference
+- [`deploy/compose.env.example`](deploy/compose.env.example) — placeholder immutable image reference
+- [Operations Runbook](docs/operations-runbook.md#image-publication) — GHCR, Dokploy, Vercel, rollout, and rollback procedure
 
 ## Demo placeholders
 
@@ -315,7 +293,6 @@ Production deployment files:
 - AI memory is bounded in Redis and expires. This limits retained chat PII while keeping the state consistent across backend replicas.
 - HttpOnly cookies are used for the browser, while Bearer tokens remain supported for non-browser API clients.
 - Physical deletion is avoided for products and users; operational state is preserved for auditability.
-- Recommendation events store a keyed pseudonymous user reference rather than the MongoDB user ID. Offline time-decayed trending and item-item co-occurrence run on bounded CPU workloads and produce immutable MongoDB artifacts; no GPU, vector database, or separate service is required.
 
 ## Known limitations
 
@@ -324,12 +301,9 @@ Production deployment files:
 - Redis stores only token/session state and a SHA-256 digest of each refresh token, never raw refresh tokens. Access tokens and refresh tokens are rotated/revoked through Redis-backed session state.
 - LiteLLM response caching is local to one process and intentionally disabled for customer-agent calls.
 - SSE fan-out is process-local; a multi-replica deployment requires a shared event transport or single-replica queue affinity.
-- Personalized item-item serving defaults to a `0%` rollout until an operator reviews temporal Recall/NDCG, coverage, artifact bounds, and activation-gate output.
-- Recommendation artifacts remain immutable process-local runtime objects; short-lived personalized result cache entries are shared through Redis.
 - The copied frontend history is not yet merged into the backend repository's commit graph; the original frontend repository is retained outside this monorepo working tree until a history-preserving merge is explicitly authorized.
 
 ## Roadmap
 
 1. Keep GitHub Actions green, then add deployment screenshots and a demo recording.
 2. Validate LINE OAuth, webhook, and order-status pushes with dedicated sandbox credentials.
-3. Run controlled recommendation rollout at 5%, 25%, and 100% only after production-like latency and conversion monitoring.

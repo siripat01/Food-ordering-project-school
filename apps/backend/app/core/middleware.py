@@ -2,16 +2,80 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Collection
 from time import perf_counter
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from starlette.datastructures import Headers, MutableHeaders
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.observability import ApplicationMetrics, reset_request_id, set_request_id
 
 logger = logging.getLogger(__name__)
+
+CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+AUTH_COOKIE_NAMES = frozenset({"access_token", "refresh_token"})
+
+
+def _origin_from_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def is_trusted_cookie_request(
+    *,
+    method: str,
+    cookies: Collection[str] | dict[str, str],
+    origin: str | None,
+    referer: str | None,
+    allowed_origins: Collection[str],
+) -> bool:
+    """Allow safe requests and cookie mutations from configured browser origins."""
+    if method.upper() in CSRF_SAFE_METHODS:
+        return True
+    if not AUTH_COOKIE_NAMES.intersection(cookies):
+        return True
+    candidate = _origin_from_url(origin) or _origin_from_url(referer)
+    trusted = {_origin_from_url(value) for value in allowed_origins}
+    return candidate is not None and candidate in trusted
+
+
+class CookieCSRFMiddleware:
+    """Reject cross-site state-changing requests authenticated by cookies."""
+
+    def __init__(self, app: ASGIApp, *, allowed_origins: Collection[str]) -> None:
+        self.app = app
+        self.allowed_origins = tuple(allowed_origins)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        if not is_trusted_cookie_request(
+            method=request.method,
+            cookies=request.cookies,
+            origin=request.headers.get("origin"),
+            referer=request.headers.get("referer"),
+            allowed_origins=self.allowed_origins,
+        ):
+            response = JSONResponse(
+                {"detail": "CSRF validation failed"},
+                status_code=403,
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 
 class RequestIDMiddleware:

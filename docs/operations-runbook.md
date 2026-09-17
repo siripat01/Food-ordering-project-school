@@ -20,19 +20,16 @@ This runbook covers configuration, deployment, health checks, observability, mig
 
 | Group | Important variables |
 | --- | --- |
-| Core | `APP_ENV`, `MONGODB_URI`, `JWT_SECRET`, `RECOMMENDATION_USER_REF_SECRET` |
+| Core | `APP_ENV`, `MONGODB_URI`, `JWT_SECRET` |
 | Public URLs | `FRONTEND_URL`, `BACKEND_URL`, `CORS_ORIGINS`, `COOKIE_SECURE` |
 | Redis, logging, metrics, SSE | `REDIS_URL`, `LOG_LEVEL`, `LOG_JSON`, `METRICS_ENABLED`, `SSE_*` |
 | LINE | `LINE_ENABLED`, channel credentials, login credentials, `LINE_REDIRECT_URI` |
 | LLM | `LLM_ENABLED`, `LLM_API_KEY`, base URL, model tiers, routing, limits, cache, cost inputs |
-| Recommender | Provider mode/URL, dedicated pseudonym key, retention/caps, rollout, artifact/cache/profile bounds |
 | Frontend build | `NEXT_PUBLIC_API_URL` |
 
 Startup fails intentionally when required values are missing, either required secret is weak/reused as a placeholder, production cookies are insecure, or an enabled integration is incomplete. Do not work around this validation.
 
 `NEXT_PUBLIC_API_URL` is embedded during the frontend build. Rebuild the frontend when this value changes.
-
-When rotating `RECOMMENDATION_USER_REF_SECRET`, increment `RECOMMENDATION_USER_REF_KEY_VERSION` and temporarily map the old version to its old key in `RECOMMENDATION_USER_REF_PREVIOUS_SECRETS`. Keep old keys in the secret manager until the event/slate retention windows expire so authenticated privacy purge can derive every still-live pseudonym. Current and previous recommendation keys must be distinct and must never equal `JWT_SECRET`.
 
 ## Image publication
 
@@ -52,52 +49,50 @@ ghcr.io/<owner>/<repository>-backend@sha256:<digest>
 
 Use the digest in production when practical. The mutable `main` tag is for inspection and must not be the recorded rollback boundary. SemVer tags are also emitted for Git tags matching `v*.*.*`.
 
-If the GHCR package is private, authenticate the VM with a dedicated read-only package credential before pulling. Never use a developer password or a token with write/delete package scopes on the VM.
+If the GHCR package is private, configure Dokploy with a dedicated read-only package credential. Never use a developer password or a token with write/delete package scopes.
 
 References: [GitHub container publishing](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images) and [GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 
-## VM deployment through Cloudflare Tunnel
+## Dokploy deployment
 
-Production uses [`compose.prod.yaml`](../compose.prod.yaml). It contains only the backend and `cloudflared`; MongoDB is external and the frontend is deployed by Vercel. The backend has no published host port. Cloudflare's remotely managed tunnel must route the public API hostname to `http://backend:8000` on the Compose network.
+Production uses [`compose.prod.yaml`](../compose.prod.yaml). It contains Redis,
+the backend, the Taskiq worker, and the outbox dispatcher. MongoDB is external
+and the frontend is deployed by Vercel. The backend has no published host port;
+Dokploy's Domains/Traefik integration routes the public API hostname to the
+backend service on port `8000`.
 
-`cloudflared` reads the token through `TUNNEL_TOKEN_FILE` so it does not appear in process arguments. See [Cloudflare Tunnel run parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/).
+Configure the Dokploy Compose service with:
 
-Prepare deployment files on the VM without committing their populated copies:
+1. Compose path: `compose.prod.yaml`.
+2. The production branch used by the repository.
+3. Keep the repository connection for Compose source synchronization, but disable direct Git push Auto Deploy for this service. The image digest is updated manually after GitHub Actions publishes it.
+4. A Dokploy Domain targeting service `backend` and container port `8000`.
+5. The complete runtime environment in Dokploy's Compose Environment. The
+   `BACKEND_IMAGE` value must be an immutable GHCR digest, and the same
+   environment is loaded by `backend`, `worker`, and `dispatcher` through
+   `.env`.
 
-```bash
-cp deploy/backend.env.example deploy/backend.env
-cp deploy/compose.env.example deploy/compose.env
-mkdir -p deploy/secrets
-```
+After a successful image publication run, copy the full immutable image
+reference from the `Backend container` job summary into Dokploy's
+`BACKEND_IMAGE` Compose Environment and redeploy the Compose service. Do not
+copy only the digest; the value must include the GHCR image name and the
+`@sha256:` prefix.
 
-Fill `deploy/backend.env` from the production secret store. Put only the remotely managed tunnel token in `deploy/secrets/cloudflare-tunnel-token`, then restrict all three files:
+If GHCR is private, configure a read-only GHCR registry credential in Dokploy.
+Do not commit a populated `.env`, `deploy/backend.env`, or registry token.
 
-```bash
-chmod 600 deploy/backend.env deploy/compose.env deploy/secrets/cloudflare-tunnel-token
-```
-
-Set `BACKEND_IMAGE` in `deploy/compose.env` to the digest printed by the successful GitHub Actions run. Validate the fully resolved Compose model without printing it:
-
-```bash
-docker compose --env-file deploy/compose.env --file compose.prod.yaml config --quiet
-```
-
-Pull and start the exact image:
-
-```bash
-docker compose --env-file deploy/compose.env --file compose.prod.yaml pull
-docker compose --env-file deploy/compose.env --file compose.prod.yaml up --detach --wait
-```
-
-Inspect state and bounded logs without exposing environment values:
+Validate the Compose model locally with a test environment file without
+printing secret values:
 
 ```bash
-docker compose --env-file deploy/compose.env --file compose.prod.yaml ps
-docker compose --env-file deploy/compose.env --file compose.prod.yaml logs --tail=100 backend
-docker compose --env-file deploy/compose.env --file compose.prod.yaml logs --tail=100 cloudflared
+BACKEND_IMAGE='ghcr.io/example/hiwkaw-backend@sha256:<digest>' \
+BACKEND_ENV_FILE='.env.ci' \
+docker compose --file compose.prod.yaml config --quiet
 ```
 
-Do not use commands that print the complete container environment in shared terminals or tickets. Do not add a backend `ports` mapping; tunnel traffic should remain on the private Compose network.
+The image publication job runs in parallel with the backend, frontend, and
+container checks. Only deploy an image reference from a run whose required
+checks have passed.
 
 ## Vercel frontend
 
@@ -130,11 +125,12 @@ The deployment runs three backend processes from the same image:
 
 | Service | Command | Notes |
 | --- | --- | --- |
-| `backend` | `uvicorn app.main:app` (image default) | Only service reachable through the tunnel |
+| `backend` | `uvicorn app.main:app` (image default) | Only service exposed through the Dokploy Domain |
 | `worker` | `taskiq worker app.core.taskiq:broker` | No published or exposed ports |
 | `dispatcher` | `python -m app.jobs.dispatcher` | Run one replica; claims are atomic so extras are safe but useless |
 
-All three share `deploy/backend.env`; do not duplicate secrets per service.
+All three share Dokploy's Compose Environment through `.env`; do not duplicate
+secrets per service.
 
 `MONGODB_URI` must point at a replica set (MongoDB Atlas already is one).
 Without it the transactional outbox falls back to a non-atomic dual write and
@@ -168,9 +164,9 @@ See the [Observability Runbook](observability.md) for the metric list and redact
 1. Back up MongoDB and verify restore instructions.
 2. Run the complete CI boundary against the exact revision.
 3. Select the immutable backend digest produced by the successful CI run.
-4. Apply backend, Compose, tunnel-token, and Vercel environment configuration.
-5. Pull and start the backend, worker, dispatcher, and tunnel without publishing the backend port.
-6. Wait for readiness through the public tunnel and inspect startup logs.
+4. Apply backend, Compose, Dokploy Domain, and Vercel environment configuration.
+5. Let Dokploy pull and start the backend, worker, and dispatcher without publishing the backend port.
+6. Wait for readiness through the public Dokploy Domain and inspect startup logs.
 7. Deploy the frontend from `apps/frontend` on Vercel with the correct public API build variable.
 8. Smoke-test public products, login if enabled, an isolated test order, staff transition, logs, and metrics. Confirm the test order's outbox event reaches `sent` and the worker logged the matching task.
 9. Shift traffic gradually where the platform supports it.
@@ -213,29 +209,14 @@ Application rollback should be image-based:
 5. Do not automatically roll back database documents written in the new schema; the dual-read design is intended to keep them readable.
 6. If data restoration is required, stop writes and use the provider's reviewed restore procedure. Do not improvise destructive MongoDB commands.
 
-Apply an image rollback with the same pull/up boundary:
-
-```bash
-docker compose --env-file deploy/compose.env --file compose.prod.yaml pull backend
-docker compose --env-file deploy/compose.env --file compose.prod.yaml up --detach --wait backend
-```
-
-Recommendation rollback does not require an application or data rollback. Switch the active pointer to a retained, validated version:
-
-```bash
-cd apps/backend
-.venv/bin/python -m scripts.build_recommendation_model \
-  --write --rollback-version MODEL_VERSION
-```
-
-Keep `RECOMMENDATION_ITEM_ITEM_ROLLOUT_PERCENT=0` while shadow-building. Increase it through reviewed 5%, 25%, and 100% stages. A failed or out-of-bounds build never replaces the active model; online serving falls through to materialized trending and then recent available products.
+Apply an image rollback by setting `BACKEND_IMAGE` to the previous known-good
+digest in Dokploy's Compose Environment, then redeploying the Compose service.
 
 ## Common startup failures
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | `JWT_SECRET must be a generated random value` | Placeholder or weak secret | Generate a stable random value of at least 32 characters in the secret manager and recreate the backend. |
-| `RECOMMENDATION_USER_REF_SECRET must be a generated random value` | Missing, reused placeholder, or weak recommendation pseudonym key | Generate an independent stable random value of at least 32 characters; do not reuse `JWT_SECRET`. |
 | Missing `MONGODB_URI` or connection timeout | Missing value, wrong Compose hostname, network policy, or revoked user | Use `mongo` as the host inside local Compose and `localhost` only for host-native development; then verify provider access. |
 | Readiness returns `503` | MongoDB ping failed | Inspect database availability and network access; liveness may remain healthy. |
 | Browser CORS error | Public frontend origin is absent or mismatched | Add the exact scheme, host, and port to `CORS_ORIGINS`; never use `*` with credentials. |
@@ -260,6 +241,6 @@ Keep `RECOMMENDATION_ITEM_ITEM_ROLLOUT_PERCENT=0` while shadow-building. Increas
 - The post-LiteLLM backend and frontend images passed an isolated local Docker Compose rebuild and smoke test on 2026-08-22.
 - GitHub Actions backend, frontend, and container jobs passed for Phase 3 commit `e5bd195` on 2026-08-23.
 - LINE OAuth and webhook behavior still require a real sandbox end-to-end test.
-- Metrics and SSE fan-out remain process-local. Agent memory, confirmations, rate limits, authentication session state, and recommendation result caches are Redis-backed.
+- Metrics and SSE fan-out remain process-local. Agent memory, confirmations, rate limits, and authentication session state are Redis-backed.
 - LINE assistant replies and order notifications now require a running Taskiq worker; the API only enqueues them.
 - The transactional outbox requires a MongoDB replica set. A standalone deployment degrades to a documented non-atomic fallback and is not production-suitable.
