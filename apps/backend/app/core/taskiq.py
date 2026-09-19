@@ -9,6 +9,7 @@ from taskiq.middlewares import SimpleRetryMiddleware
 from taskiq_redis import RedisAsyncResultBackend, RedisStreamBroker
 
 from app.core.config import get_settings
+from app.core.observability import ApplicationMetrics, MetricsHTTPServer
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,16 @@ async def on_worker_startup(state: TaskiqState) -> None:
 
     settings = get_settings()
     configure_logging(level=settings.log_level, json_logs=settings.log_json)
-    state.services = await build_worker_services(settings)
+    metrics = ApplicationMetrics()
+    metrics_server = MetricsHTTPServer(metrics.registry)
+    if settings.metrics_enabled:
+        metrics_server.start(port=settings.worker_metrics_port)
+    state.metrics_server = metrics_server
+    try:
+        state.services = await build_worker_services(settings, metrics=metrics)
+    except Exception:
+        metrics_server.stop()
+        raise
     logger.info("taskiq_worker_started", extra={"queue_name": QUEUE_NAME})
 
 
@@ -59,8 +69,13 @@ async def on_worker_shutdown(state: TaskiqState) -> None:
     from app.bootstrap import close_worker_services
 
     services = getattr(state, "services", None)
-    if services is not None:
-        await close_worker_services(services)
+    try:
+        if services is not None:
+            await close_worker_services(services)
+    finally:
+        metrics_server = getattr(state, "metrics_server", None)
+        if metrics_server is not None:
+            metrics_server.stop()
     logger.info("taskiq_worker_stopped", extra={"queue_name": QUEUE_NAME})
 
 

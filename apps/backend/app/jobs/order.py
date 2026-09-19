@@ -6,12 +6,13 @@ from taskiq import Context, TaskiqDepends
 
 from app.core.taskiq import broker
 from app.domain.jobs import TaskName
-from app.jobs.context import bind_correlation_id, services_from
+from app.jobs.context import bind_correlation_id, services_from, track_task
 
 logger = logging.getLogger(__name__)
 
 
 @broker.task(task_name=TaskName.ORDER_PROCESS.value)
+@track_task(TaskName.ORDER_PROCESS.value)
 async def process_order(
     order_id: str,
     correlation_id: str | None = None,
@@ -34,6 +35,7 @@ async def process_order(
 
 
 @broker.task(task_name=TaskName.ORDER_UPDATE_STATUS.value)
+@track_task(TaskName.ORDER_UPDATE_STATUS.value)
 async def update_order_status(
     order_id: str,
     user_id: str | None = None,
@@ -67,6 +69,7 @@ async def update_order_status(
 
 
 @broker.task(task_name=TaskName.ORDER_CANCEL.value)
+@track_task(TaskName.ORDER_CANCEL.value)
 async def cancel_order(
     order_id: str,
     user_id: str,

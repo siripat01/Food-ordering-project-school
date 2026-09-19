@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, cast
 from uuid import uuid4
 
 from pymongo import ASCENDING, ReturnDocument
@@ -110,6 +110,15 @@ class OutboxRepository:
     async def find_one(self, event_id: str) -> dict[str, Any] | None:
         return await self.db.outbox_events.find_one({"_id": parse_object_id(event_id)})
 
+    async def oldest_pending_created_at(self) -> datetime | None:
+        document = await self.db.outbox_events.find_one(
+            {"status": {"$in": CLAIMABLE_STATUSES}},
+            sort=[("createdAt", ASCENDING)],
+            projection={"createdAt": 1},
+        )
+        value = document.get("createdAt") if document else None
+        return cast(datetime | None, value)
+
 
 class OutboxService:
     """Writes committed facts and owns the outbox delivery lifecycle."""
@@ -170,6 +179,12 @@ class OutboxService:
             },
         )
         return event_id
+
+    async def oldest_pending_age_seconds(self) -> float:
+        created_at = await self.repository.oldest_pending_created_at()
+        if created_at is None:
+            return 0.0
+        return max((utc_now() - created_at).total_seconds(), 0.0)
 
     async def claim_pending_events(self, *, limit: int = 20) -> list[OutboxEvent]:
         """Claim up to ``limit`` due events.

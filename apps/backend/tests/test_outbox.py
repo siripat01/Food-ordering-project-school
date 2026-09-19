@@ -66,6 +66,26 @@ async def test_save_event_is_idempotent_on_a_repeated_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_oldest_pending_age_ignores_sent_events() -> None:
+    service, collection = build_service()
+    await service.save_event(
+        event_type=OutboxEventType.ORDER_CREATED.value,
+        payload={"orderId": "pending"},
+    )
+    await service.save_event(
+        event_type=OutboxEventType.ORDER_CREATED.value,
+        payload={"orderId": "sent"},
+    )
+    sent = collection.documents[1]
+    sent["status"] = OutboxStatus.SENT.value
+    collection.documents[0]["createdAt"] = utc_now() - timedelta(seconds=12)
+
+    age = await service.oldest_pending_age_seconds()
+
+    assert age >= 12
+
+
+@pytest.mark.asyncio
 async def test_claim_marks_processing_and_assigns_a_fencing_token() -> None:
     service, collection = build_service()
     await service.save_event(

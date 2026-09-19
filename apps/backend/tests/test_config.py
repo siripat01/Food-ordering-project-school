@@ -36,6 +36,28 @@ def test_placeholder_jwt_secret_is_rejected() -> None:
     assert placeholder not in str(exc_info.value)
 
 
+def test_production_metrics_require_a_bearer_token() -> None:
+    with pytest.raises(ValidationError, match="METRICS_AUTH_TOKEN"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            mongodb_uri="mongodb://localhost:27017",
+            jwt_secret="test-secret-0123456789abcdef0123456789",
+            metrics_enabled=True,
+        )
+
+
+def test_placeholder_metrics_token_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            mongodb_uri="mongodb://localhost:27017",
+            jwt_secret="test-secret-0123456789abcdef0123456789",
+            metrics_auth_token="<generated-metrics-bearer-token>",
+        )
+
+
 def test_application_can_be_constructed_with_valid_configuration(settings: Settings) -> None:
     app = create_app(settings, initialize_clients=False)
     assert app.title == "Food Ordering API"
