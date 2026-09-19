@@ -6,7 +6,7 @@ from taskiq import Context, TaskiqDepends
 
 from app.core.taskiq import broker
 from app.domain.jobs import TaskName
-from app.jobs.context import bind_correlation_id, services_from
+from app.jobs.context import bind_correlation_id, services_from, track_task
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +14,7 @@ IDEMPOTENCY_SCOPE = TaskName.AGENT_PROCESS.value
 
 
 @broker.task(task_name=TaskName.AGENT_PROCESS.value)
+@track_task(TaskName.AGENT_PROCESS.value)
 async def process_agent_message(
     line_user_id: str,
     message: str,

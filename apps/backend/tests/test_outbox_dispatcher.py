@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.observability import ApplicationMetrics
 from app.domain.jobs import TaskName
 from app.domain.outbox import OutboxEventType, OutboxStatus
 from app.jobs.dispatcher import (
@@ -66,6 +67,26 @@ async def test_event_is_routed_to_its_task_and_marked_sent(
 
     assert enqueued == [(task_name.value, {"orderId": "order-1", "userId": "user-1"})]
     assert collection.documents[0]["status"] == OutboxStatus.SENT.value
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_records_outbox_outcome_metrics() -> None:
+    service, _ = build_service()
+    await seed(service, OutboxEventType.ORDER_CREATED.value)
+    metrics = ApplicationMetrics()
+
+    dispatcher = OutboxDispatcher(
+        service,
+        metrics=metrics,
+        handlers={OutboxEventType.ORDER_CREATED.value: AsyncMock()},
+    )
+    assert await dispatcher.run_once() == 1
+
+    rendered = metrics.render().decode()
+    assert (
+        'food_ordering_outbox_events_total{event_type="order.created",outcome="sent"}'
+        in rendered
+    )
 
 
 @pytest.mark.asyncio
@@ -140,6 +161,7 @@ async def test_polling_loop_survives_a_failing_claim(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     dispatcher = AsyncMock()
+    dispatcher.metrics = None
     polling = OutboxPollingDispatcher(
         dispatcher,
         poll_interval_seconds=0.01,

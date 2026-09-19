@@ -1,0 +1,20 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"expr": "sum by (task, outcome) (rate(food_ordering_task_executions_total[5m]))", "refId": "A"}], "title": "Task outcomes", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le, task) (rate(food_ordering_task_duration_seconds_bucket[5m])))", "refId": "A"}], "title": "Task p95 duration", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}, "id": 3, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"expr": "sum by (event_type, outcome) (rate(food_ordering_outbox_events_total[5m]))", "refId": "A"}], "title": "Outbox outcomes", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}, "id": 4, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"expr": "food_ordering_outbox_oldest_pending_age_seconds", "refId": "A"}], "title": "Oldest outbox event age", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []}, "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}, "id": 5, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"expr": "sum by (model) (rate(food_ordering_llm_estimated_cost_usd_total[1h]))", "refId": "A"}, {"expr": "sum by (model) (rate(food_ordering_llm_tokens_total[1h]))", "refId": "B"}], "title": "LLM usage and estimated cost", "type": "timeseries"}
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["food-ordering", "jobs", "llm"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "Food Ordering — Jobs and LLM",
+  "uid": "food-ordering-jobs",
+  "version": 1
+}

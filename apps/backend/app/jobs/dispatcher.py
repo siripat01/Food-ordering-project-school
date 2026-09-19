@@ -7,10 +7,15 @@ import signal
 from collections.abc import Awaitable, Callable
 
 from app.core.config import Settings, get_settings
-from app.core.observability import configure_logging, set_request_id
+from app.core.observability import (
+    ApplicationMetrics,
+    MetricsHTTPServer,
+    configure_logging,
+    set_request_id,
+)
 from app.db.mongodb import MongoDatabase
 from app.domain.jobs import TaskName
-from app.domain.outbox import OutboxEvent, OutboxEventType
+from app.domain.outbox import OutboxEvent, OutboxEventType, OutboxStatus
 from app.services.outbox import (
     OutboxLeaseLostError,
     OutboxRepository,
@@ -69,10 +74,12 @@ class OutboxDispatcher:
         *,
         handlers: dict[str, DispatchHandler] | None = None,
         batch_size: int = CLAIM_BATCH_SIZE,
+        metrics: ApplicationMetrics | None = None,
     ) -> None:
         self.outbox = outbox
         self.handlers = handlers if handlers is not None else EVENT_HANDLERS
         self.batch_size = batch_size
+        self.metrics = metrics
 
     async def dispatch(self, event: OutboxEvent) -> None:
         """Enqueue one event's task, then transition the owned lease."""
@@ -84,12 +91,16 @@ class OutboxDispatcher:
                 event,
                 error=f"No task route for event type {event.event_type}",
             )
+            self._record(event, "dead")
             return
 
         try:
             await handler(event)
         except Exception as exc:
-            await self.outbox.mark_as_failed(event, error=f"{type(exc).__name__}: {exc}")
+            outcome = await self.outbox.mark_as_failed(
+                event, error=f"{type(exc).__name__}: {exc}"
+            )
+            self._record(event, "dead" if outcome is OutboxStatus.DEAD else "failed")
             logger.warning(
                 "outbox_dispatch_failed",
                 extra={
@@ -103,6 +114,7 @@ class OutboxDispatcher:
             return
 
         await self.outbox.mark_as_sent(event)
+        self._record(event, "sent")
         logger.info(
             "outbox_event_dispatched",
             extra={
@@ -132,12 +144,22 @@ class OutboxDispatcher:
                         "event_type": event.event_type,
                     },
                 )
+                self._record(event, "lease_lost")
             except Exception:
                 logger.exception(
                     "outbox_dispatch_crashed",
                     extra={"event_id": event.id, "event_type": event.event_type},
                 )
+        if self.metrics is not None:
+            age_seconds = await self.outbox.oldest_pending_age_seconds()
+            self.metrics.set_outbox_oldest_age(age_seconds)
         return len(events)
+
+    def _record(self, event: OutboxEvent, outcome: str) -> None:
+        if self.metrics is None:
+            return
+        event_type = event.event_type if event.event_type in EVENT_TASK_NAMES else "unknown"
+        self.metrics.record_outbox(event_type, outcome)
 
 
 class OutboxPollingDispatcher:
@@ -165,6 +187,8 @@ class OutboxPollingDispatcher:
                 handled = await self.dispatcher.run_once()
             except Exception:
                 logger.exception("outbox_poll_failed")
+                if self.dispatcher.metrics is not None:
+                    self.dispatcher.metrics.record_outbox("dispatcher", "poll_error")
                 handled = 0
             delay = self.poll_interval_seconds if handled else self.idle_interval_seconds
             with contextlib.suppress(TimeoutError):
@@ -181,13 +205,22 @@ async def main(settings: Settings | None = None) -> None:
     from app.core.taskiq import broker
 
     db = MongoDatabase(resolved)
+    metrics = ApplicationMetrics()
+    metrics_server = MetricsHTTPServer(metrics.registry)
+    if resolved.metrics_enabled:
+        metrics_server.start(port=resolved.dispatcher_metrics_port)
     broker_started = False
     try:
         await db.connect()
         await broker.startup()
         broker_started = True
 
-        polling = OutboxPollingDispatcher(OutboxDispatcher(OutboxService(OutboxRepository(db))))
+        polling = OutboxPollingDispatcher(
+            OutboxDispatcher(
+                OutboxService(OutboxRepository(db)),
+                metrics=metrics,
+            )
+        )
         loop = asyncio.get_running_loop()
         for received in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
@@ -197,6 +230,7 @@ async def main(settings: Settings | None = None) -> None:
         if broker_started:
             await broker.shutdown()
         await db.close()
+        metrics_server.stop()
 
 
 if __name__ == "__main__":

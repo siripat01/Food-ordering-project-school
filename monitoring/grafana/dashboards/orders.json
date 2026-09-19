@@ -1,0 +1,18 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"expr": "rate(food_ordering_orders_created_total[5m])", "refId": "A"}], "title": "Orders created per second", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"expr": "rate(food_ordering_order_value_total[5m])", "refId": "A"}], "title": "Order value per second", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "prometheus"}, "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}, "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}, "id": 3, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"expr": "sum by (status) (rate(food_ordering_order_status_changes_total[5m]))", "refId": "A"}], "title": "Order status transitions", "type": "timeseries"}
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["food-ordering", "orders"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "title": "Food Ordering — Orders",
+  "uid": "food-ordering-orders",
+  "version": 1
+}

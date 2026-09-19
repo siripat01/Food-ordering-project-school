@@ -22,7 +22,8 @@ This runbook covers configuration, deployment, health checks, observability, mig
 | --- | --- |
 | Core | `APP_ENV`, `MONGODB_URI`, `JWT_SECRET` |
 | Public URLs | `FRONTEND_URL`, `BACKEND_URL`, `CORS_ORIGINS`, `COOKIE_SECURE` |
-| Redis, logging, metrics, SSE | `REDIS_URL`, `LOG_LEVEL`, `LOG_JSON`, `METRICS_ENABLED`, `SSE_*` |
+| Redis, logging, metrics, SSE | `REDIS_URL`, `LOG_LEVEL`, `LOG_JSON`, `METRICS_ENABLED`, `METRICS_AUTH_TOKEN`, `SSE_*` |
+| Monitoring stack | `PROMETHEUS_RETENTION`, `GRAFANA_BIND_ADDRESS`, `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`, `ALERTMANAGER_WEBHOOK_URL` |
 | LINE | `LINE_ENABLED`, channel credentials, login credentials, `LINE_REDIRECT_URI` |
 | LLM | `LLM_ENABLED`, `LLM_API_KEY`, base URL, model tiers, routing, limits, cache, cost inputs |
 | Frontend build | `NEXT_PUBLIC_API_URL` |
@@ -155,9 +156,22 @@ by idempotency keys rather than prevented. See
 
 The backend emits structured JSON logs by default. Use `X-Request-ID` to correlate a client report with the request log. Order lifecycle logs also include an order ID.
 
-Prometheus metrics are available at `/metrics` when enabled. Do not expose this endpoint publicly without ingress-level access control. The application endpoint itself is not authenticated.
+Prometheus metrics are available at `/metrics` when enabled. Production
+requires the deployment-managed `METRICS_AUTH_TOKEN` bearer token, and
+Prometheus reads the same value from the private Docker secret file. Do not
+share this token or put it in dashboards.
 
 See the [Observability Runbook](observability.md) for the metric list and redaction guarantees.
+
+## Private monitoring access
+
+The production Compose stack keeps Prometheus, Grafana, and Alertmanager on
+the private Docker network. Grafana is bound only to the Dokploy host's
+Tailscale IPv4 address using `GRAFANA_BIND_ADDRESS`; Prometheus and
+Alertmanager have no published ports. To inspect the dashboards, connect
+through Tailscale/VPN and open `http://<tailscale-ip>:3000`. Use the
+deployment-managed Grafana credentials; do not expose Grafana or `/metrics`
+through the public API domain.
 
 ## Deployment sequence
 
@@ -168,9 +182,11 @@ See the [Observability Runbook](observability.md) for the metric list and redact
 5. Let Dokploy pull and start the backend, worker, and dispatcher without publishing the backend port.
 6. Wait for readiness through the public Dokploy Domain and inspect startup logs.
 7. Deploy the frontend from `apps/frontend` on Vercel with the correct public API build variable.
-8. Smoke-test public products, login if enabled, an isolated test order, staff transition, logs, and metrics. Confirm the test order's outbox event reaches `sent` and the worker logged the matching task.
-9. Shift traffic gradually where the platform supports it.
-10. Record the deployed revision, image digests, configuration version, and verification result without recording secret values.
+8. Connect through Tailscale/VPN and confirm Grafana loads the provisioned dashboards and Prometheus reports healthy API, worker, and dispatcher targets.
+9. Smoke-test public products, login if enabled, an isolated test order, staff transition, logs, and metrics. Confirm the test order's outbox event reaches `sent` and the worker logged the matching task.
+10. Verify Alertmanager can deliver a test alert through the configured generic webhook, then remove the test alert.
+11. Shift traffic gradually where the platform supports it.
+12. Record the deployed revision, image digests, configuration version, and verification result without recording secret values.
 
 ## Legacy order migration
 

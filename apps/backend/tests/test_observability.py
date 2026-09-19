@@ -52,6 +52,50 @@ async def test_request_metrics_and_request_id_are_exposed(settings) -> None:
     assert 'route="/api/v1/health/live"' in metrics.text
 
 
+@pytest.mark.asyncio
+async def test_protected_metrics_require_a_bearer_token(settings) -> None:
+    from pydantic import SecretStr
+
+    settings.metrics_auth_token = SecretStr("metrics-test-token")
+    app = create_app(settings, initialize_clients=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        missing = await client.get("/metrics")
+        wrong = await client.get("/metrics", headers={"Authorization": "Bearer wrong"})
+        correct = await client.get(
+            "/metrics", headers={"Authorization": "Bearer metrics-test-token"}
+        )
+
+    assert missing.status_code == 404
+    assert wrong.status_code == 404
+    assert correct.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint_reports_dependency_status(settings) -> None:
+    app = create_app(settings, initialize_clients=False)
+
+    class Database:
+        async def ping(self):
+            return False
+
+    class Redis:
+        async def ping(self):
+            return True
+
+    app.state.db = Database()
+    app.state.redis = Redis()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/metrics")
+
+    assert response.status_code == 200
+    assert 'food_ordering_dependency_up{dependency="mongodb"} 0.0' in response.text
+    assert 'food_ordering_dependency_up{dependency="redis"} 1.0' in response.text
+
+
 class FakeModel:
     def bind_tools(self, _tools):
         return self

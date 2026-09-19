@@ -7,7 +7,7 @@ from taskiq import Context, TaskiqDepends
 
 from app.core.taskiq import broker
 from app.domain.jobs import TaskName
-from app.jobs.context import bind_correlation_id, services_from
+from app.jobs.context import bind_correlation_id, services_from, track_task
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ def _masked_line_user_id(line_user_id: str) -> str:
 
 
 @broker.task(task_name=TaskName.LINE_PUSH.value)
+@track_task(TaskName.LINE_PUSH.value)
 async def push_line(
     line_user_id: str,
     messages: list[dict[str, Any]],
@@ -53,6 +54,7 @@ async def push_line(
 
 
 @broker.task(task_name=TaskName.LINE_REPLY.value)
+@track_task(TaskName.LINE_REPLY.value)
 async def reply_line(
     reply_token: str,
     messages: list[dict[str, Any]],

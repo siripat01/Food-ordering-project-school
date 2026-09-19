@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_json: bool = True
     metrics_enabled: bool = True
+    metrics_auth_token: SecretStr | None = Field(default=None, min_length=32)
+    worker_metrics_port: int = Field(default=9101, ge=1024, le=65535)
+    dispatcher_metrics_port: int = Field(default=9102, ge=1024, le=65535)
     sse_heartbeat_seconds: int = Field(default=15, ge=5, le=60)
     sse_subscriber_queue_size: int = Field(default=50, ge=10, le=500)
 
@@ -112,11 +115,18 @@ class Settings(BaseSettings):
     def reject_placeholder_jwt_secret(cls, value: SecretStr) -> SecretStr:
         return cls._validate_generated_secret(value, "JWT_SECRET")
 
+    @field_validator("metrics_auth_token")
+    @classmethod
+    def reject_placeholder_metrics_token(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        return cls._validate_generated_secret(value, "METRICS_AUTH_TOKEN")
+
     @staticmethod
     def _validate_generated_secret(value: SecretStr, variable_name: str) -> SecretStr:
         secret = value.get_secret_value()
         normalized = secret.lower().strip()
-        if normalized.startswith("replace-") or normalized in {
+        if normalized.startswith(("replace-", "<", "generate-")) or normalized in {
             "changeme",
             "mysecret",
             "secret",
@@ -139,6 +149,12 @@ class Settings(BaseSettings):
     def validate_feature_configuration(self) -> Self:
         if self.app_env == "production" and not self.cookie_secure:
             raise ValueError("COOKIE_SECURE must be true in production")
+        if (
+            self.app_env == "production"
+            and self.metrics_enabled
+            and not self.metrics_auth_token
+        ):
+            raise ValueError("METRICS_ENABLED in production requires METRICS_AUTH_TOKEN")
         if self.line_enabled:
             required = {
                 "LINE_CHANNEL_SECRET": self.line_channel_secret,

@@ -73,6 +73,7 @@ class WorkerServices:
     order_workflow: OrderWorkflowService
     customer_agent: CustomerAgentService
     line_chat: LineChatService
+    metrics: ApplicationMetrics
 
 
 async def enqueue_line_push(
@@ -246,6 +247,7 @@ async def build_worker_services(
             order_workflow=order_workflow,
             customer_agent=customer_agent,
             line_chat=line_chat,
+            metrics=resolved_metrics,
         )
     except Exception:
         if customer_agent is not None:

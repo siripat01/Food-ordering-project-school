@@ -112,7 +112,7 @@ jobs:
           export FOOD_ORDERING_ENV_FILE=.env.ci
           cleanup() {
             docker compose down --volumes
-            rm -f .env.ci .tunnel-token.ci
+            rm -f .env.ci .metrics-token.ci .tunnel-token.ci
           }
           trap cleanup EXIT
           docker compose up --detach --build --wait
@@ -120,8 +120,12 @@ jobs:
           curl --fail --silent http://localhost:8000/api/v1/health/ready
           curl --fail --silent http://localhost:3000
           curl --fail --silent http://localhost:8000/metrics
+          printf '%s\n' 'ci-placeholder-metrics-token' > .metrics-token.ci
           BACKEND_IMAGE='ghcr.io/example/hiwkaw-backend:sha-ci' \
             BACKEND_ENV_FILE='.env.ci' \
+            METRICS_TOKEN_FILE='.metrics-token.ci' \
+            GRAFANA_ADMIN_PASSWORD='ci-grafana-password' \
+            ALERTMANAGER_WEBHOOK_URL='https://example.invalid/alerts' \
             docker compose --file compose.prod.yaml config --quiet
 
   backend-image:

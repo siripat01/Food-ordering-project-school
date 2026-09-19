@@ -7,9 +7,18 @@ import sys
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from decimal import Decimal
+from threading import Thread
 from typing import Any
+from wsgiref.simple_server import WSGIServer
 
-from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+    start_http_server,
+)
 
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
@@ -179,6 +188,35 @@ class ApplicationMetrics:
             ("model",),
             registry=self.registry,
         )
+        self.task_executions = Counter(
+            "food_ordering_task_executions_total",
+            "Background task executions by task and outcome.",
+            ("task", "outcome"),
+            registry=self.registry,
+        )
+        self.task_latency = Histogram(
+            "food_ordering_task_duration_seconds",
+            "Background task duration in seconds.",
+            ("task",),
+            registry=self.registry,
+        )
+        self.outbox_events = Counter(
+            "food_ordering_outbox_events_total",
+            "Outbox events by event type and dispatch outcome.",
+            ("event_type", "outcome"),
+            registry=self.registry,
+        )
+        self.outbox_oldest_age = Gauge(
+            "food_ordering_outbox_oldest_pending_age_seconds",
+            "Age of the oldest pending outbox event in seconds.",
+            registry=self.registry,
+        )
+        self.dependencies = Gauge(
+            "food_ordering_dependency_up",
+            "Whether a required runtime dependency is reachable.",
+            ("dependency",),
+            registry=self.registry,
+        )
 
     def observe_http(
         self, *, method: str, route: str, status_code: int, duration_seconds: float
@@ -213,5 +251,46 @@ class ApplicationMetrics:
         if estimated_cost_usd:
             self.llm_estimated_cost.labels(model).inc(estimated_cost_usd)
 
+    def record_task(self, task: str, outcome: str, duration_seconds: float) -> None:
+        self.task_executions.labels(task, outcome).inc()
+        self.task_latency.labels(task).observe(duration_seconds)
+
+    def record_outbox(self, event_type: str, outcome: str) -> None:
+        self.outbox_events.labels(event_type, outcome).inc()
+
+    def set_outbox_oldest_age(self, age_seconds: float) -> None:
+        self.outbox_oldest_age.set(max(age_seconds, 0.0))
+
+    def set_dependency_status(self, dependency: str, is_up: bool) -> None:
+        self.dependencies.labels(dependency).set(1 if is_up else 0)
+
     def render(self) -> bytes:
         return generate_latest(self.registry)
+
+
+class MetricsHTTPServer:
+    """Small private HTTP server for metrics-only background processes."""
+
+    def __init__(self, registry: CollectorRegistry) -> None:
+        self.registry = registry
+        self._server: WSGIServer | None = None
+        self._thread: Thread | None = None
+
+    def start(self, *, port: int, host: str = "0.0.0.0") -> None:  # noqa: S104
+        if self._server is not None:
+            return
+        self._server, self._thread = start_http_server(
+            port,
+            addr=host,
+            registry=self.registry,
+        )
+
+    def stop(self) -> None:
+        if self._server is None:
+            return
+        self._server.shutdown()
+        self._server.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+        self._server = None
+        self._thread = None

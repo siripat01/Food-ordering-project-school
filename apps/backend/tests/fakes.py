@@ -136,8 +136,15 @@ class FakeOutboxCollection:
             return SimpleNamespace(matched_count=1)
         return SimpleNamespace(matched_count=0)
 
-    async def find_one(self, query):
-        for document in self.documents:
-            if self._matches(document, query):
-                return dict(document)
+    async def find_one(self, query, sort=None, projection=None):
+        candidates = [d for d in self.documents if self._matches(d, query)]
+        if sort:
+            field, direction = sort[0]
+            candidates.sort(key=lambda d: d[field], reverse=direction < 0)
+        for document in candidates:
+            if projection:
+                return {
+                    field: document[field] for field, enabled in projection.items() if enabled
+                }
+            return dict(document)
         return None
